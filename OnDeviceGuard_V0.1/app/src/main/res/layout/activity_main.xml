@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F4F7FB"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#17365D"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/app_subtitle"
+            android:textColor="#526579"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/txtProtectionStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:background="#DDF5E5"
+            android:padding="14dp"
+            android:text="@string/protection_ready"
+            android:textColor="#176534"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/test_message_title"
+            android:textColor="#17365D"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/editMessage"
+            android:layout_width="match_parent"
+            android:layout_height="150dp"
+            android:layout_marginTop="12dp"
+            android:autofillHints=""
+            android:backgroundTint="#456B91"
+            android:gravity="top|start"
+            android:hint="@string/message_hint"
+            android:inputType="textMultiLine|textCapSentences"
+            android:padding="12dp"
+            android:textColor="#172B3A"
+            android:textColorHint="#78899A" />
+
+        <Button
+            android:id="@+id/btnAnalyze"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/analyze_message" />
+
+        <TextView
+            android:id="@+id/txtDetectionResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="#FFFFFF"
+            android:padding="16dp"
+            android:text="@string/detection_placeholder"
+            android:textColor="#25364A"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/btnExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:enabled="false"
+            android:text="@string/explain_with_ai" />
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/txtExplanation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="#E7EDF7"
+            android:padding="16dp"
+            android:text="@string/explanation_placeholder"
+            android:textColor="#25364A"
+            android:textSize="15sp" />
+
+    </LinearLayout>
+</ScrollView>

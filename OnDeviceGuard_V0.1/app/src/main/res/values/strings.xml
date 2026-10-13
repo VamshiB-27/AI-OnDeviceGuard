@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">OnDeviceGuard</string>
+
+
+    <string name="app_subtitle">On-device threat and scam protection</string>
+    <string name="protection_ready">Protection interface ready</string>
+    <string name="test_message_title">Test a message</string>
+    <string name="message_hint">Paste an SMS here...</string>
+    <string name="analyze_message">Analyze Message</string>
+    <string name="detection_placeholder">Detection result will appear here.</string>
+    <string name="explain_with_ai">Explain with AI</string>
+    <string name="explanation_placeholder">The AI explanation will appear here.</string>
+
+</resources>
