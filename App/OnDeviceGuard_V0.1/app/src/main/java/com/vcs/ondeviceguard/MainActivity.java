@@ -2,6 +2,9 @@
 package com.vcs.ondeviceguard;
 
 import android.os.Bundle;
+import android.os.Debug;
+import android.os.Process;
+import android.os.SystemClock;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -37,6 +40,9 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isClassifying;
     private boolean isExplaining;
+
+    private long classificationStartTime;
+    private long cpuStartTime;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -104,6 +110,9 @@ public class MainActivity extends AppCompatActivity {
                 "The explanation will appear here.");
         txtProtectionStatus.setText("Classification in progress");
 
+        classificationStartTime = SystemClock.elapsedRealtime();
+        cpuStartTime = Process.getElapsedCpuTime();
+
         classifier.classify(
                 message,
                 new MessageClassifier.Callback() {
@@ -111,6 +120,19 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSuccess(
                             MessageClassification result) {
+
+                        long elapsedTime =
+                                SystemClock.elapsedRealtime()
+                                        - classificationStartTime;
+
+                        long cpuElapsed =
+                                Process.getElapsedCpuTime()
+                                        - cpuStartTime;
+
+                        Debug.MemoryInfo memoryInfo =
+                                new Debug.MemoryInfo();
+
+                        Debug.getMemoryInfo(memoryInfo);
 
                         runOnUiThread(() -> {
                             isClassifying = false;
@@ -120,16 +142,23 @@ public class MainActivity extends AppCompatActivity {
 
                             latestResult = result;
 
+                            double score = result.getDecisionScore();
+
+                            double ramUsageMb =
+                                    memoryInfo.getTotalPss() / 1024.0;
+
+                            double cpuUsage = elapsedTime > 0
+                                    ? cpuElapsed * 100.0 / elapsedTime
+                                    : 0.0;
+
                             StringBuilder details =
                                     new StringBuilder();
 
-                            details.append("Classification: ")
+                            details.append("CLASSIFICATION\n");
+                            details.append("Result: ")
                                     .append(result.getLabel()
                                             .toUpperCase(Locale.ROOT))
                                     .append("\n");
-
-                            double score =
-                                    result.getDecisionScore();
 
                             if (!Double.isNaN(score)
                                     && !Double.isInfinite(score)) {
@@ -139,9 +168,36 @@ public class MainActivity extends AppCompatActivity {
                                                 "%.6f",
                                                 score))
                                         .append("\n");
+                            } else {
+                                details.append(
+                                        "SVM decision score: unavailable\n");
                             }
 
-                            details.append("\nIndicators:\n");
+                            details.append(
+                                    "Spam threshold: -0.140241\n\n");
+
+                            details.append("PERFORMANCE METRICS\n");
+
+                            details.append("App RAM (PSS): ")
+                                    .append(String.format(
+                                            Locale.US,
+                                            "%.2f MB",
+                                            ramUsageMb))
+                                    .append("\n");
+
+                            details.append(
+                                            "App CPU usage (estimated): ")
+                                    .append(String.format(
+                                            Locale.US,
+                                            "%.1f%%",
+                                            cpuUsage))
+                                    .append("\n");
+
+                            details.append("Classification time: ")
+                                    .append(elapsedTime)
+                                    .append(" ms\n\n");
+
+                            details.append("INDICATORS\n");
 
                             if (result.getIndicators().isEmpty()) {
                                 details.append(

@@ -69,21 +69,41 @@
             android:text="@string/analyze_message" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="Detection Results"
+            android:textColor="#17365D"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
             android:id="@+id/txtDetectionResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="10dp"
             android:background="#FFFFFF"
+            android:elevation="2dp"
             android:padding="16dp"
             android:text="@string/detection_placeholder"
             android:textColor="#25364A"
-            android:textSize="16sp" />
+            android:textSize="16sp"
+            android:lineSpacingExtra="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="AI Explanation"
+            android:textColor="#17365D"
+            android:textSize="20sp"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/btnExplain"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_marginTop="10dp"
             android:enabled="false"
             android:text="@string/explain_with_ai" />
 
@@ -105,7 +125,19 @@
             android:padding="16dp"
             android:text="@string/explanation_placeholder"
             android:textColor="#25364A"
-            android:textSize="15sp" />
+            android:textSize="15sp"
+            android:lineSpacingExtra="3dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center"
+            android:text="OnDeviceGuard • On-device SMS analysis"
+            android:textColor="#78899A"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
 
     </LinearLayout>
+
 </ScrollView>

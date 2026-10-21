@@ -1,3 +1,4 @@
+
 package com.vcs.ondeviceguard.model;
 
 import android.content.Context;
@@ -10,7 +11,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -23,8 +23,9 @@ import java.util.regex.Pattern;
 
 public final class OnDeviceSvmClassifier implements MessageClassifier {
 
-    private static final double THRESHOLD = -0.1402412876876613;
     private static final String ASSET_NAME = "sms_android_export.json";
+    private static final String EXPECTED_MODEL_TYPE =
+            "word_char_tfidf_linear_svm";
 
     private static final Pattern WORD_PATTERN =
             Pattern.compile("[\\p{L}\\p{N}_]{2,}");
@@ -32,12 +33,16 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
     private final ExecutorService executor =
             Executors.newSingleThreadExecutor();
 
-    private final Map<String, Integer> wordVocabulary = new HashMap<>();
-    private final Map<String, Integer> charVocabulary = new HashMap<>();
+    private final Map<String, Integer> wordVocabulary =
+            new HashMap<>();
+
+    private final Map<String, Integer> charVocabulary =
+            new HashMap<>();
 
     private double[] wordIdf;
     private double[] charIdf;
     private double[] weights;
+
     private double intercept;
     private double threshold;
 
@@ -47,13 +52,13 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
         try {
             loadModel(context.getApplicationContext());
         } catch (Exception e) {
-            loadError = "Could not load the exported SMS model: "
+            loadError = "Could not load SMS model: "
                     + e.getMessage();
         }
     }
 
     private void loadModel(Context context) throws Exception {
-        byte[] bytes;
+        byte[] modelBytes;
 
         try (InputStream input =
                      context.getAssets().open(ASSET_NAME);
@@ -67,25 +72,27 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
                 output.write(buffer, 0, count);
             }
 
-            bytes = output.toByteArray();
+            modelBytes = output.toByteArray();
         }
 
         JSONObject root = new JSONObject(
-                new String(bytes, StandardCharsets.UTF_8));
+                new String(modelBytes, StandardCharsets.UTF_8));
 
-        if (!"word_char_tfidf_linear_svm".equals(
+        if (!EXPECTED_MODEL_TYPE.equals(
                 root.getString("model_type"))) {
             throw new IllegalArgumentException(
-                    "Unexpected model type");
+                    "Unsupported model type");
         }
 
         intercept = root.getDouble("intercept");
         threshold = root.getDouble("threshold");
-        weights = readDoubleArray(root.getJSONArray("weights"));
 
-        JSONObject vectorizers =
-                root.getJSONObject("feature_union")
-                        .getJSONObject("vectorizers");
+        weights = readDoubleArray(
+                root.getJSONArray("weights"));
+
+        JSONObject vectorizers = root
+                .getJSONObject("feature_union")
+                .getJSONObject("vectorizers");
 
         JSONObject word = vectorizers.getJSONObject("word");
         JSONObject chars = vectorizers.getJSONObject("char");
@@ -98,31 +105,49 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
                 chars.getJSONObject("vocabulary"),
                 charVocabulary);
 
-        wordIdf = readDoubleArray(word.getJSONArray("idf"));
-        charIdf = readDoubleArray(chars.getJSONArray("idf"));
+        wordIdf = readDoubleArray(
+                word.getJSONArray("idf"));
+
+        charIdf = readDoubleArray(
+                chars.getJSONArray("idf"));
+
+        validateVocabulary(
+                wordVocabulary,
+                wordIdf.length,
+                "word");
+
+        validateVocabulary(
+                charVocabulary,
+                charIdf.length,
+                "character");
 
         if (weights.length !=
-                wordVocabulary.size() + charVocabulary.size()) {
+                wordIdf.length + charIdf.length) {
             throw new IllegalArgumentException(
-                    "Model weight and vocabulary sizes do not match");
+                    "Weight count does not match combined vocabulary size");
         }
 
-        if (wordIdf.length != wordVocabulary.size()
-                || charIdf.length != charVocabulary.size()) {
+        if (!Double.isFinite(intercept)
+                || !Double.isFinite(threshold)) {
             throw new IllegalArgumentException(
-                    "Model IDF and vocabulary sizes do not match");
+                    "Invalid model intercept or threshold");
         }
+
+        validateFiniteArray(weights, "weights");
+        validateFiniteArray(wordIdf, "word IDF");
+        validateFiniteArray(charIdf, "character IDF");
     }
 
     private static double[] readDoubleArray(JSONArray array)
             throws Exception {
-        double[] result = new double[array.length()];
+
+        double[] values = new double[array.length()];
 
         for (int i = 0; i < array.length(); i++) {
-            result[i] = array.getDouble(i);
+            values[i] = array.getDouble(i);
         }
 
-        return result;
+        return values;
     }
 
     private static void readVocabulary(
@@ -133,7 +158,64 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
         while (keys.hasNext()) {
             String token = keys.next();
-            destination.put(token, json.optInt(token, -1));
+            int index = json.optInt(token, -1);
+
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        "Invalid vocabulary index");
+            }
+
+            destination.put(token, index);
+        }
+    }
+
+    private static void validateVocabulary(
+            Map<String, Integer> vocabulary,
+            int idfLength,
+            String name) {
+
+        if (vocabulary.size() != idfLength) {
+            throw new IllegalArgumentException(
+                    name + " vocabulary and IDF sizes differ");
+        }
+
+        boolean[] seen = new boolean[idfLength];
+
+        for (Map.Entry<String, Integer> entry :
+                vocabulary.entrySet()) {
+
+            int index = entry.getValue();
+
+            if (index < 0 || index >= idfLength) {
+                throw new IllegalArgumentException(
+                        "Invalid " + name + " feature index");
+            }
+
+            if (seen[index]) {
+                throw new IllegalArgumentException(
+                        "Duplicate " + name + " feature index");
+            }
+
+            seen[index] = true;
+        }
+
+        for (boolean present : seen) {
+            if (!present) {
+                throw new IllegalArgumentException(
+                        "Non-contiguous " + name + " vocabulary");
+            }
+        }
+    }
+
+    private static void validateFiniteArray(
+            double[] values,
+            String name) {
+
+        for (double value : values) {
+            if (!Double.isFinite(value)) {
+                throw new IllegalArgumentException(
+                        "Non-finite value in " + name);
+            }
         }
     }
 
@@ -153,42 +235,61 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
             return;
         }
 
-        executor.execute(() -> {
-            try {
-                double score = decisionScore(message);
-                boolean spam = score >= threshold;
+        try {
+            executor.execute(() -> {
+                try {
+                    double score = decisionScore(message);
+                    boolean spam = score >= threshold;
 
-                List<String> indicators = new ArrayList<>();
-                indicators.add(String.format(
-                        Locale.US,
-                        "SVM decision score: %.6f",
-                        score));
+                    List<String> indicators = new ArrayList<>();
 
-                indicators.add(String.format(
-                        Locale.US,
-                        "Decision threshold: %.6f",
-                        threshold));
+                    indicators.add(String.format(
+                            Locale.US,
+                            "SVM decision score: %.6f",
+                            score));
 
-                indicators.add(
-                        spam
-                                ? "The score is at or above the spam threshold."
-                                : "The score is below the spam threshold.");
+                    indicators.add(String.format(
+                            Locale.US,
+                            "Decision threshold: %.6f",
+                            threshold));
 
-                callback.onSuccess(
-                        new MessageClassification(
-                                spam ? "spam" : "not spam",
-                                0.0f,
-                                indicators,
-                                score));
-            } catch (Exception e) {
-                callback.onError(
-                        "Classification failed: " + e.getMessage());
-            }
-        });
+                    indicators.add(
+                            spam
+                                    ? "Score is at or above the spam threshold."
+                                    : "Score is below the spam threshold.");
+
+                    callback.onSuccess(
+                            new MessageClassification(
+                                    spam ? "spam" : "not spam",
+                                    0.0f,
+                                    indicators,
+                                    score));
+
+                } catch (Exception e) {
+                    callback.onError(
+                            "Classification failed: "
+                                    + e.getMessage());
+                }
+            });
+        } catch (RuntimeException e) {
+            callback.onError(
+                    "Classifier is unavailable: " + e.getMessage());
+        }
     }
 
     public double decisionScore(String text) {
-        String wordText = stripAccents(text.toLowerCase(Locale.ROOT));
+        if (loadError != null) {
+            throw new IllegalStateException(loadError);
+        }
+
+        if (text == null) {
+            throw new IllegalArgumentException(
+                    "Message must not be null");
+        }
+
+        String wordText = stripAccents(
+                text.toLowerCase(Locale.ROOT));
+
         String charText = text.toLowerCase(Locale.ROOT);
 
         Map<Integer, Integer> wordCounts =
@@ -207,7 +308,9 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
         for (Map.Entry<Integer, Double> entry :
                 wordVector.entrySet()) {
+
             int index = entry.getKey();
+
             score += entry.getValue() * weights[index];
         }
 
@@ -215,14 +318,18 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
         for (Map.Entry<Integer, Double> entry :
                 charVector.entrySet()) {
+
             int index = entry.getKey() + charOffset;
+
             score += entry.getValue() * weights[index];
         }
 
         return score;
     }
 
-    private Map<Integer, Integer> countWordFeatures(String text) {
+    private Map<Integer, Integer> countWordFeatures(
+            String text) {
+
         List<String> tokens = new ArrayList<>();
         Matcher matcher = WORD_PATTERN.matcher(text);
 
@@ -233,12 +340,18 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
         Map<Integer, Integer> counts = new HashMap<>();
 
         for (String token : tokens) {
-            addFeatureCount(token, wordVocabulary, counts);
+            addFeatureCount(
+                    token,
+                    wordVocabulary,
+                    counts);
         }
 
         for (int i = 0; i + 1 < tokens.size(); i++) {
+            String bigram =
+                    tokens.get(i) + " " + tokens.get(i + 1);
+
             addFeatureCount(
-                    tokens.get(i) + " " + tokens.get(i + 1),
+                    bigram,
                     wordVocabulary,
                     counts);
         }
@@ -251,10 +364,19 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
         Map<Integer, Integer> counts = new HashMap<>();
 
+        int[] codePoints = text.codePoints().toArray();
+
         for (int n = 3; n <= 5; n++) {
-            for (int i = 0; i + n <= text.length(); i++) {
-                String gram = text.substring(i, i + n);
-                addFeatureCount(gram, charVocabulary, counts);
+            for (int i = 0; i + n <= codePoints.length; i++) {
+                String gram = new String(
+                        codePoints,
+                        i,
+                        n);
+
+                addFeatureCount(
+                        gram,
+                        charVocabulary,
+                        counts);
             }
         }
 
@@ -268,8 +390,10 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
         Integer index = vocabulary.get(feature);
 
-        if (index != null && index >= 0) {
-            counts.put(index, counts.getOrDefault(index, 0) + 1);
+        if (index != null) {
+            counts.put(
+                    index,
+                    counts.getOrDefault(index, 0) + 1);
         }
     }
 
@@ -307,22 +431,40 @@ public final class OnDeviceSvmClassifier implements MessageClassifier {
 
     private static String stripAccents(String input) {
         String normalized = Normalizer.normalize(
-                input, Normalizer.Form.NFKD);
+                input,
+                Normalizer.Form.NFKD);
 
         StringBuilder result = new StringBuilder();
 
-        for (int i = 0; i < normalized.length(); i++) {
-            char c = normalized.charAt(i);
-            int type = Character.getType(c);
+        for (int offset = 0; offset < normalized.length();) {
+            int codePoint = normalized.codePointAt(offset);
+            int type = Character.getType(codePoint);
 
             if (type != Character.NON_SPACING_MARK
                     && type != Character.COMBINING_SPACING_MARK
                     && type != Character.ENCLOSING_MARK) {
-                result.append(c);
+                result.appendCodePoint(codePoint);
             }
+
+            offset += Character.charCount(codePoint);
         }
 
         return result.toString();
+    }
+
+    public double getThreshold() {
+        return threshold;
+    }
+
+    public boolean isModelLoaded() {
+        return loadError == null
+                && weights != null
+                && wordIdf != null
+                && charIdf != null;
+    }
+
+    public String getLoadError() {
+        return loadError;
     }
 
     public void shutdown() {
