@@ -9,6 +9,7 @@ public class MessageClassification {
 
     private final String label;
     private final float confidence;
+    private final double decisionScore;
     private final List<String> indicators;
 
     public MessageClassification(
@@ -16,11 +17,21 @@ public class MessageClassification {
             float confidence,
             List<String> indicators) {
 
-        this.label = label == null ? "unknown" : label;
+        this(label, confidence, indicators, Double.NaN);
+    }
 
+    public MessageClassification(
+            String label,
+            float confidence,
+            List<String> indicators,
+            double decisionScore) {
+
+        this.label = label == null ? "unknown" : label;
         this.confidence = Math.max(
                 0.0f,
                 Math.min(1.0f, confidence));
+
+        this.decisionScore = decisionScore;
 
         this.indicators = indicators == null
                 ? Collections.emptyList()
@@ -34,6 +45,10 @@ public class MessageClassification {
 
     public float getConfidence() {
         return confidence;
+    }
+
+    public double getDecisionScore() {
+        return decisionScore;
     }
 
     public List<String> getIndicators() {
