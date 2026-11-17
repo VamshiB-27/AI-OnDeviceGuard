@@ -1,18 +1,18 @@
-
 package com.vcs.ondeviceguard.llm;
 
 import android.content.Context;
 
 import com.vcs.ondeviceguard.model.MessageClassification;
 
-import org.pytorch.executorch.extension.llm.LlmGenerationConfig;
 import org.pytorch.executorch.extension.llm.LlmCallback;
+import org.pytorch.executorch.extension.llm.LlmGenerationConfig;
 import org.pytorch.executorch.extension.llm.LlmModule;
 
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
 
@@ -21,22 +21,28 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
             "Llama-3.2-1B-Instruct-SpinQuant_INT4_EO8.pte";
     private static final String TOKENIZER_FILE = "tokenizer.model";
 
-    private static final int MAX_SMS_CHARACTERS = 1000;
-    private static final int MAX_NEW_TOKENS = 96;
+    private static final long MODEL_SIZE = 1135951488L;
+    private static final long TOKENIZER_SIZE = 2183982L;
+
+    private static final int MAX_SMS_CHARACTERS = 600;
+    private static final int MAX_NEW_TOKENS = 56;
     private static final int SEQUENCE_LENGTH = 256;
 
     private final File modelFile;
     private final File tokenizerFile;
-
     private final ExecutorService executor =
             Executors.newSingleThreadExecutor();
+    private final AtomicBoolean busy = new AtomicBoolean(false);
+    private final AtomicReference<LlmModule> activeModule =
+            new AtomicReference<>();
+    private final AtomicBoolean generating = new AtomicBoolean(false);
 
-    private volatile LlmModule module;
     private volatile boolean closed;
 
     public OnDeviceLlamaExplanationProvider(Context context) {
         File directory = new File(
-                context.getFilesDir(), MODEL_DIRECTORY);
+                context.getApplicationContext().getFilesDir(),
+                MODEL_DIRECTORY);
 
         modelFile = new File(directory, MODEL_FILE);
         tokenizerFile = new File(directory, TOKENIZER_FILE);
@@ -48,24 +54,59 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
             MessageClassification classification,
             Callback callback) {
 
+        if (callback == null) {
+            return;
+        }
+
         if (closed) {
             callback.onError("Llama provider is closed.");
             return;
         }
 
+        if (!busy.compareAndSet(false, true)) {
+            callback.onError("An AI explanation is already running.");
+            return;
+        }
+
         try {
             executor.execute(() -> {
-                AtomicBoolean completed = new AtomicBoolean(false);
+                String explanation = null;
+                String failure = null;
+                LlmModule module = null;
 
                 try {
-                    ensureModelLoaded();
+                    validateModelFiles();
+
+                    module = new LlmModule(
+                            modelFile.getAbsolutePath(),
+                            tokenizerFile.getAbsolutePath(),
+                            0.2f);
+
+                    activeModule.set(module);
+
+                    if (closed) {
+                        throw new IllegalStateException(
+                                "AI explanation was cancelled.");
+                    }
+
+                    module.load();
+
+                    if (closed) {
+                        throw new IllegalStateException(
+                                "AI explanation was cancelled.");
+                    }
 
                     String prompt = buildPrompt(
-                            originalMessage, classification);
+                            originalMessage,
+                            classification);
 
-                    StringBuilder generatedText = new StringBuilder();
+                    StringBuilder generatedText =
+                            new StringBuilder();
 
-                    LlmGenerationConfig generationConfig =
+                    AtomicReference<String> generationError =
+                            new AtomicReference<>();
+
+                    LlmGenerationConfig config =
                             LlmGenerationConfig.create()
                                     .seqLen(SEQUENCE_LENGTH)
                                     .maxNewTokens(MAX_NEW_TOKENS)
@@ -73,110 +114,105 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
                                     .echo(false)
                                     .build();
 
-                    module.generate(
-                            prompt,
-                            generationConfig,
-                            new LlmCallback() {
+                    generating.set(true);
 
+                    try {
+                        module.generate(
+                                prompt,
+                                config,
+                                new LlmCallback() {
                                 @Override
                                 public void onResult(String token) {
-                                    if (!completed.get()
-                                            && token != null) {
+                                    if (token != null) {
                                         generatedText.append(token);
                                     }
                                 }
 
                                 @Override
                                 public void onStats(String statsJson) {
-                                    if (!completed.compareAndSet(
-                                            false, true)) {
-                                        return;
-                                    }
-
-                                    String explanation =
-                                            cleanOutput(
-                                                    generatedText.toString());
-
-                                    if (explanation.isEmpty()) {
-                                        callback.onError(
-                                                "Llama generated no explanation.");
-                                    } else {
-                                        callback.onSuccess(explanation);
-                                    }
                                 }
 
                                 @Override
                                 public void onError(
                                         int errorCode,
                                         String message) {
-
-                                    if (completed.compareAndSet(
-                                            false, true)) {
-                                        callback.onError(
-                                                "Llama generation failed "
-                                                        + "(error "
-                                                        + errorCode + "). "
-                                                        + safeError(message));
-                                    }
+                                    generationError.set(
+                                            "Llama generation failed "
+                                                    + "(error "
+                                                    + errorCode + "). "
+                                                    + safeError(message));
                                 }
-                            });
+                                });
+                    } finally {
+                        generating.set(false);
+                    }
+
+                    if (generationError.get() != null) {
+                        throw new IllegalStateException(
+                                generationError.get());
+                    }
+
+                    explanation = cleanOutput(
+                            generatedText.toString());
+
+                    if (explanation.isEmpty()) {
+                        throw new IllegalStateException(
+                                "Llama generated no explanation.");
+                    }
 
                 } catch (OutOfMemoryError error) {
-                    if (completed.compareAndSet(false, true)) {
-                        callback.onError(
-                                "Llama ran out of memory. Close other apps "
-                                        + "and try a shorter message.");
-                    }
+                    failure = "Llama ran out of memory. Close other apps "
+                            + "and try again with a shorter message.";
                 } catch (Exception error) {
-                    if (completed.compareAndSet(false, true)) {
-                        callback.onError(
-                                "Unable to run local Llama: "
-                                        + safeError(error.getMessage()));
+                    failure = "Unable to run local Llama: "
+                            + safeError(error.getMessage());
+                } finally {
+                    if (module != null) {
+                        activeModule.compareAndSet(module, null);
+                        try {
+                            module.close();
+                        } catch (Exception closeError) {
+                            if (failure == null && explanation == null) {
+                                failure = "Llama resource cleanup failed: "
+                                        + safeError(closeError.getMessage());
+                            }
+                        }
                     }
+
+                    busy.set(false);
+                }
+
+                if (failure != null) {
+                    callback.onError(failure);
+                } else if (explanation != null) {
+                    callback.onSuccess(explanation);
+                } else {
+                    callback.onError(
+                            "Llama could not generate an explanation.");
                 }
             });
         } catch (RuntimeException error) {
+            busy.set(false);
             callback.onError(
                     "Unable to start Llama: "
                             + safeError(error.getMessage()));
         }
     }
 
-    private synchronized void ensureModelLoaded() {
-        if (closed) {
-            throw new IllegalStateException(
-                    "Llama provider is closed.");
-        }
-
-        if (module != null) {
-            return;
-        }
-
+    private void validateModelFiles() {
         if (!modelFile.isFile()
-                || modelFile.length() != 1135951488L) {
+                || modelFile.length() != MODEL_SIZE) {
             throw new IllegalStateException(
-                    "Llama model is missing or has an unexpected size.");
+                    "Llama model is missing or has an unexpected size. "
+                            + "Import the correct .pte file.");
         }
 
         if (!tokenizerFile.isFile()
-                || tokenizerFile.length() != 2183982L) {
+                || tokenizerFile.length() != TOKENIZER_SIZE) {
             throw new IllegalStateException(
-                    "Tokenizer is missing or has an unexpected size.");
+                    "Tokenizer is missing or has an unexpected size. "
+                            + "Import tokenizer.model again.");
         }
-
-        LlmModule candidate = new LlmModule(
-                modelFile.getAbsolutePath(),
-                tokenizerFile.getAbsolutePath(),
-                0.2f);
-
-        candidate.load();
-
-        if (closed) {
-            throw new IllegalStateException(
-                    "Llama provider was closed during loading.");
-        }
-
-        module = candidate;
     }
 
     private String buildPrompt(
@@ -191,13 +227,15 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
             message = message.substring(0, MAX_SMS_CHARACTERS);
         }
 
-        String label = classification.getLabel() == null
+        String label = classification == null
+                || classification.getLabel() == null
                 ? "unknown"
                 : classification.getLabel();
 
         StringBuilder indicators = new StringBuilder();
 
-        if (classification.getIndicators() != null) {
+        if (classification != null
+                && classification.getIndicators() != null) {
             int count = 0;
 
             for (String indicator : classification.getIndicators()) {
@@ -208,7 +246,6 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
                 indicators.append("- ")
                         .append(indicator)
                         .append('\n');
-
                 count++;
             }
         }
@@ -224,14 +261,15 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
                 + "Do not change the supplied classifier label. "
                 + "A decision score is not a probability. "
                 + "Do not claim that a sender or URL was verified. "
-                + "Give a brief explanation and practical safety advice. "
+                + "Give a very short explanation and one practical safety action. "
                 + "<|eot_id|>"
                 + "<|start_header_id|>user<|end_header_id|>\n"
                 + "Classifier label: " + label + "\n"
                 + "Indicators:\n" + indicators
                 + "SMS text:\n" + message + "\n"
-                + "Explain in at most 100 words. "
-                + "Do not repeat the decision score unless necessary. "
+                + "Explain in at most 40 words using simple language. "
+                + "Use no more than 2 short sentences. "
+                + "Do not repeat the decision score. "
                 + "<|eot_id|>"
                 + "<|start_header_id|>assistant<|end_header_id|>\n";
     }
@@ -262,7 +300,7 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
         return result;
     }
 
-    private String safeError(String message) {
+    private static String safeError(String message) {
         if (message == null || message.trim().isEmpty()) {
             return "Unknown runtime error.";
         }
@@ -274,11 +312,29 @@ public class OnDeviceLlamaExplanationProvider implements ExplanationProvider {
             result = result.substring(0, 300) + "...";
         }
 
+        if (result.length() > 280) {
+            result = result.substring(0, 277).trim() + "...";
+        }
+
         return result;
+    }
+
+    public boolean isBusy() {
+        return busy.get();
     }
 
     public void shutdown() {
         closed = true;
-        executor.shutdownNow();
+
+        LlmModule module = activeModule.get();
+
+        if (module != null && generating.get()) {
+            try {
+                module.stop();
+            } catch (Exception ignored) {
+            }
+        }
+
+        executor.shutdown();
     }
 }

@@ -1,10 +1,23 @@
 package com.vcs.ondeviceguard;
 
 import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.res.ColorStateList;
+import android.content.res.Configuration;
+import android.database.Cursor;
+import android.provider.Telephony;
+import android.graphics.Color;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.net.VpnService;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Debug;
 import android.os.Process;
 import android.os.SystemClock;
@@ -18,7 +31,13 @@ import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
+import com.vcs.ondeviceguard.network.NetworkProtectionService;
 import com.vcs.ondeviceguard.llm.ExplanationProvider;
 import com.vcs.ondeviceguard.llm.OnDeviceLlamaExplanationProvider;
 import com.vcs.ondeviceguard.model.MessageClassification;
@@ -47,6 +66,11 @@ public class MainActivity extends AppCompatActivity {
     private static final long TOKENIZER_SIZE = 2183982L;
 
     private static final int PERMISSION_REQUEST_CODE = 1001;
+    private static final String ERROR_CHANNEL_ID = "ondeviceguard_errors";
+    private static final int STATUS_SUCCESS = 0;
+    private static final int STATUS_INFO = 1;
+    private static final int STATUS_WARNING = 2;
+    private static final int STATUS_ERROR = 3;
 
     private EditText editMessage;
     private EditText editUrl;
@@ -55,11 +79,15 @@ public class MainActivity extends AppCompatActivity {
     private TextView txtDetectionResult;
     private TextView txtExplanation;
     private TextView txtUrlResult;
+    private TextView txtResourceMonitor;
 
     private Button btnAnalyze;
+    private Button btnLoadLatestSms;
     private Button btnExplain;
-    private Button btnImportLlama;
     private Button btnScanUrl;
+    private Button btnStartNetworkProtection;
+    private Button btnStopNetworkProtection;
+    private TextView txtNetworkStatus;
 
     private ProgressBar progressBar;
 
@@ -75,13 +103,45 @@ public class MainActivity extends AppCompatActivity {
     private boolean isExplaining;
     private boolean isImporting;
     private boolean isScanningUrl;
+    private boolean explainAfterImport;
 
     private long classificationStartTime;
     private long cpuStartTime;
 
     private int importStep;
+    private DeviceResourceMonitor resourceMonitor;
 
     private ActivityResultLauncher<Intent> filePicker;
+    private ActivityResultLauncher<Intent> vpnPermissionLauncher;
+    private boolean networkReceiverRegistered;
+
+    private final BroadcastReceiver networkStatusReceiver =
+            new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (intent == null
+                            || !NetworkProtectionService.ACTION_STATUS.equals(
+                            intent.getAction())) {
+                        return;
+                    }
+
+                    String status = intent.getStringExtra(
+                            NetworkProtectionService.EXTRA_STATUS);
+                    boolean blocked = intent.getBooleanExtra(
+                            NetworkProtectionService.EXTRA_BLOCKED, false);
+
+                    if (status != null) {
+                        txtNetworkStatus.setText(status);
+                        setFeedbackBackground(
+                                txtNetworkStatus,
+                                blocked ? STATUS_ERROR : STATUS_INFO);
+                        setStatus(
+                                status,
+                                blocked ? STATUS_ERROR : STATUS_SUCCESS,
+                                false);
+                    }
+                }
+            };
 
     private final ExecutorService modelExecutor =
             Executors.newSingleThreadExecutor();
@@ -95,7 +155,12 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        applySystemBarAppearance();
         setContentView(R.layout.activity_main);
+        applySystemBarInsets();
 
         filePicker = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
@@ -117,17 +182,38 @@ public class MainActivity extends AppCompatActivity {
                             result.getData().getData());
                 });
 
+        vpnPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK) {
+                        startNetworkProtectionService();
+                    } else {
+                        setNetworkStatus(
+                                "VPN permission was denied. Network protection is off.",
+                                STATUS_WARNING);
+                    }
+                });
+
         initializeViews();
+        createErrorNotificationChannel();
+        registerNetworkStatusReceiver();
         initializeModelProviders();
         initializeListeners();
+
+        resourceMonitor = new DeviceResourceMonitor(
+                getApplicationContext(),
+                metrics -> {
+                    if (isActivityUsable() && txtResourceMonitor != null) {
+                        txtResourceMonitor.setText(metrics);
+                    }
+                });
 
         btnAnalyze.setEnabled(false);
         btnExplain.setEnabled(false);
 
         progressBar.setVisibility(View.GONE);
 
-        txtProtectionStatus.setText(
-                "Loading on-device SMS model...");
+        setStatus("Loading on-device SMS model...", STATUS_INFO, false);
 
         txtDetectionResult.setText(
                 "SMS classification model is loading.");
@@ -139,6 +225,46 @@ public class MainActivity extends AppCompatActivity {
                 "Enter a URL and select Scan URL.");
 
         requestSecurityPermissions();
+    }
+
+    private void applySystemBarAppearance() {
+        int nightMode = getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        boolean isNightMode = nightMode == Configuration.UI_MODE_NIGHT_YES;
+
+        WindowInsetsControllerCompat controller =
+                new WindowInsetsControllerCompat(
+                        getWindow(),
+                        getWindow().getDecorView());
+
+        controller.setAppearanceLightStatusBars(!isNightMode);
+        controller.setAppearanceLightNavigationBars(!isNightMode);
+    }
+
+    private void applySystemBarInsets() {
+        View root = findViewById(R.id.mainScrollView);
+
+        int initialLeft = root.getPaddingLeft();
+        int initialTop = root.getPaddingTop();
+        int initialRight = root.getPaddingRight();
+        int initialBottom = root.getPaddingBottom();
+
+        ViewCompat.setOnApplyWindowInsetsListener(
+                root,
+                (view, windowInsets) -> {
+                    Insets bars = windowInsets.getInsets(
+                            WindowInsetsCompat.Type.systemBars());
+
+                    view.setPadding(
+                            initialLeft + bars.left,
+                            initialTop + bars.top,
+                            initialRight + bars.right,
+                            initialBottom + bars.bottom);
+
+                    return windowInsets;
+                });
+
+        ViewCompat.requestApplyInsets(root);
     }
 
     private void initializeViews() {
@@ -159,11 +285,17 @@ public class MainActivity extends AppCompatActivity {
                 findViewById(R.id.txtUrlResult);
 
         btnAnalyze = findViewById(R.id.btnAnalyze);
+        btnLoadLatestSms = findViewById(R.id.btnLoadLatestSms);
         btnExplain = findViewById(R.id.btnExplain);
-        btnImportLlama = findViewById(R.id.btnImportLlama);
         btnScanUrl = findViewById(R.id.btnScanUrl);
+        btnStartNetworkProtection =
+                findViewById(R.id.btnStartNetworkProtection);
+        btnStopNetworkProtection =
+                findViewById(R.id.btnStopNetworkProtection);
+        txtNetworkStatus = findViewById(R.id.txtNetworkStatus);
 
         progressBar = findViewById(R.id.progressBar);
+        txtResourceMonitor = findViewById(R.id.txtResourceMonitor);
     }
 
     private void initializeModelProviders() {
@@ -203,8 +335,7 @@ public class MainActivity extends AppCompatActivity {
 
                         btnAnalyze.setEnabled(false);
 
-                        txtProtectionStatus.setText(
-                                "SMS model loading failed");
+                        setStatus("SMS model loading failed", STATUS_ERROR, true);
 
                         txtDetectionResult.setText(
                                 error == null
@@ -231,8 +362,7 @@ public class MainActivity extends AppCompatActivity {
 
                     btnAnalyze.setEnabled(true);
 
-                    txtProtectionStatus.setText(
-                            "SMS protection model ready");
+                    setStatus("SMS protection model ready", STATUS_SUCCESS, false);
 
                     txtDetectionResult.setText(
                             "Enter an SMS message and select Analyze.");
@@ -256,8 +386,7 @@ public class MainActivity extends AppCompatActivity {
 
                     btnAnalyze.setEnabled(false);
 
-                    txtProtectionStatus.setText(
-                            "SMS model initialization failed");
+                    setStatus("SMS model initialization failed", STATUS_ERROR, true);
 
                     txtDetectionResult.setText(
                             message == null
@@ -273,14 +402,95 @@ public class MainActivity extends AppCompatActivity {
         btnAnalyze.setOnClickListener(
                 v -> analyzeMessage());
 
+        btnLoadLatestSms.setOnClickListener(
+                v -> loadLatestSms());
+
         btnExplain.setOnClickListener(
                 v -> explainMessage());
 
-        btnImportLlama.setOnClickListener(
-                v -> startLlamaImport());
 
         btnScanUrl.setOnClickListener(
                 v -> scanUrl());
+
+        btnStartNetworkProtection.setOnClickListener(
+                v -> requestNetworkProtection());
+
+        btnStopNetworkProtection.setOnClickListener(
+                v -> stopNetworkProtection());
+    }
+
+    private void registerNetworkStatusReceiver() {
+        IntentFilter filter = new IntentFilter(
+                NetworkProtectionService.ACTION_STATUS);
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(
+                    networkStatusReceiver,
+                    filter,
+                    Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(networkStatusReceiver, filter);
+        }
+
+        networkReceiverRegistered = true;
+    }
+
+    private void requestNetworkProtection() {
+        Intent prepareIntent = VpnService.prepare(this);
+
+        if (prepareIntent == null) {
+            startNetworkProtectionService();
+        } else {
+            vpnPermissionLauncher.launch(prepareIntent);
+        }
+    }
+
+    private void startNetworkProtectionService() {
+        Intent intent = new Intent(
+                this, NetworkProtectionService.class);
+        intent.setAction(NetworkProtectionService.ACTION_START);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+
+            setNetworkStatus(
+                    "Starting DNS threat protection...",
+                    STATUS_INFO);
+        } catch (Exception error) {
+            setNetworkStatus(
+                    "Unable to start network protection: "
+                            + safeMessage(error),
+                    STATUS_ERROR);
+        }
+    }
+
+    private void stopNetworkProtection() {
+        Intent intent = new Intent(
+                this, NetworkProtectionService.class);
+        intent.setAction(NetworkProtectionService.ACTION_STOP);
+
+        try {
+            startService(intent);
+        } catch (Exception error) {
+            stopService(new Intent(
+                    this, NetworkProtectionService.class));
+        }
+
+        setNetworkStatus(
+                "Stopping DNS threat protection...",
+                STATUS_INFO);
+    }
+
+    private void setNetworkStatus(String message, int status) {
+        if (txtNetworkStatus != null) {
+            txtNetworkStatus.setText(message);
+            setFeedbackBackground(txtNetworkStatus, status);
+        }
+        setStatus(message, status, status == STATUS_ERROR);
     }
 
     private boolean isActivityUsable() {
@@ -300,6 +510,12 @@ public class MainActivity extends AppCompatActivity {
                     Manifest.permission.RECEIVE_SMS);
         }
 
+        if (checkSelfPermission(
+                Manifest.permission.READ_SMS)
+                != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.READ_SMS);
+        }
+
         if (android.os.Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(
                 Manifest.permission.POST_NOTIFICATIONS)
@@ -310,10 +526,12 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (!permissions.isEmpty()) {
-
             requestPermissions(
                     permissions.toArray(new String[0]),
                     PERMISSION_REQUEST_CODE);
+        } else if (checkSelfPermission(Manifest.permission.READ_SMS)
+                == PackageManager.PERMISSION_GRANTED) {
+            loadLatestSms();
         }
     }
 
@@ -332,33 +550,104 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        boolean smsGranted =
-                checkSelfPermission(
-                        Manifest.permission.RECEIVE_SMS)
+        boolean receiveSmsGranted =
+                checkSelfPermission(Manifest.permission.RECEIVE_SMS)
+                        == PackageManager.PERMISSION_GRANTED;
+
+        boolean readSmsGranted =
+                checkSelfPermission(Manifest.permission.READ_SMS)
                         == PackageManager.PERMISSION_GRANTED;
 
         boolean notificationGranted =
-                android.os.Build.VERSION.SDK_INT < 33
-                        || checkSelfPermission(
-                        Manifest.permission.POST_NOTIFICATIONS)
+                Build.VERSION.SDK_INT < 33
+                        || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                         == PackageManager.PERMISSION_GRANTED;
 
-        if (smsGranted && notificationGranted) {
+        if (readSmsGranted) {
+            loadLatestSms();
+        }
 
-            txtProtectionStatus.setText(
+        if (receiveSmsGranted && readSmsGranted && notificationGranted) {
+            setStatus(
                     isModelLoading
                             ? "SMS permissions granted. Loading model..."
-                            : "SMS and notification permissions granted");
-
-        } else if (!smsGranted) {
-
-            txtProtectionStatus.setText(
-                    "SMS permission required for automatic SMS protection");
-
+                            : "SMS inbox and incoming SMS access enabled",
+                    STATUS_SUCCESS,
+                    false);
+        } else if (!readSmsGranted || !receiveSmsGranted) {
+            setStatus(
+                    "Allow SMS permissions to read inbox messages and detect incoming SMS. Manual paste remains available.",
+                    STATUS_WARNING,
+                    false);
         } else {
+            setStatus("Notification permission not granted", STATUS_WARNING, false);
+        }
+    }
 
-            txtProtectionStatus.setText(
-                    "Notification permission not granted");
+    private void loadLatestSms() {
+        if (checkSelfPermission(Manifest.permission.READ_SMS)
+                != PackageManager.PERMISSION_GRANTED) {
+            setStatus("SMS inbox permission is required to load a message.",
+                    STATUS_WARNING, false);
+            requestSecurityPermissions();
+            return;
+        }
+
+        String[] projection = new String[] {
+                Telephony.Sms.BODY,
+                Telephony.Sms.ADDRESS,
+                Telephony.Sms.DATE
+        };
+
+        try (Cursor cursor = getContentResolver().query(
+                Telephony.Sms.Inbox.CONTENT_URI,
+                projection,
+                null,
+                null,
+                Telephony.Sms.DATE + " DESC")) {
+
+            if (cursor == null || !cursor.moveToFirst()) {
+                setStatus("No SMS messages found in the inbox.",
+                        STATUS_INFO, false);
+                Toast.makeText(this, "Inbox is empty.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            int bodyIndex = cursor.getColumnIndex(Telephony.Sms.BODY);
+            int addressIndex = cursor.getColumnIndex(Telephony.Sms.ADDRESS);
+
+            String body = bodyIndex >= 0 ? cursor.getString(bodyIndex) : null;
+            String address = addressIndex >= 0 ? cursor.getString(addressIndex) : null;
+
+            if (body == null || body.trim().isEmpty()) {
+                setStatus("The latest SMS has no readable message body.",
+                        STATUS_ERROR, false);
+                return;
+            }
+
+            editMessage.setText(body);
+            editMessage.setSelection(editMessage.getText().length());
+            latestMessage = body.trim();
+            latestResult = null;
+            btnExplain.setEnabled(false);
+            txtDetectionResult.setText("Message loaded. Select Analyze message.");
+            setFeedbackBackground(txtDetectionResult, STATUS_INFO);
+            txtExplanation.setText("Analyze this SMS first, then request a short AI explanation.");
+            setFeedbackBackground(txtExplanation, STATUS_INFO);
+
+            String senderText = address == null || address.trim().isEmpty()
+                    ? "unknown sender"
+                    : address;
+            setStatus("Latest SMS loaded from " + senderText,
+                    STATUS_SUCCESS, false);
+            Toast.makeText(this, "Latest SMS loaded into the message box.",
+                    Toast.LENGTH_SHORT).show();
+
+        } catch (SecurityException error) {
+            setStatus("SMS inbox access was denied.", STATUS_ERROR, true);
+        } catch (Exception error) {
+            setStatus("Unable to read SMS inbox: " + safeMessage(error),
+                    STATUS_ERROR, true);
         }
     }
 
@@ -445,6 +734,16 @@ public class MainActivity extends AppCompatActivity {
                     btnScanUrl.setEnabled(true);
 
                     txtUrlResult.setText(finalOutput);
+                    setFeedbackBackground(
+                            txtUrlResult,
+                            result.isSuspicious() ? STATUS_ERROR : STATUS_SUCCESS);
+                    if (result.isSuspicious()) {
+                        setStatus("Suspicious URL pattern detected",
+                                STATUS_ERROR, false);
+                    } else {
+                        setStatus("URL scan completed",
+                                STATUS_SUCCESS, false);
+                    }
                 });
 
             } catch (Exception error) {
@@ -462,6 +761,8 @@ public class MainActivity extends AppCompatActivity {
                     txtUrlResult.setText(
                             "URL scanning failed: "
                                     + safeMessage(error));
+                    setFeedbackBackground(txtUrlResult, STATUS_ERROR);
+                    setStatus("URL scanning failed", STATUS_ERROR, true);
                 });
             }
         });
@@ -479,7 +780,6 @@ public class MainActivity extends AppCompatActivity {
         importStep = 1;
         isImporting = true;
 
-        btnImportLlama.setEnabled(false);
         btnAnalyze.setEnabled(false);
         btnExplain.setEnabled(false);
 
@@ -534,8 +834,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        txtProtectionStatus.setText(
-                "Importing " + fileName + "...");
+        setStatus("Importing " + fileName + "...", STATUS_INFO, false);
 
         txtExplanation.setText(
                 "Please wait while the file is copied.");
@@ -602,17 +901,35 @@ public class MainActivity extends AppCompatActivity {
                                     + expectedSize + " bytes.");
                 }
 
-                if (destinationFile.exists()
-                        && !destinationFile.delete()) {
+                File backupFile =
+                        new File(directory, fileName + ".bak");
 
+                if (backupFile.exists() && !backupFile.delete()) {
                     throw new IllegalStateException(
-                            "Cannot replace existing model file.");
+                            "Cannot clear the previous import backup.");
+                }
+
+                boolean movedOldFile = false;
+
+                if (destinationFile.exists()) {
+                    if (!destinationFile.renameTo(backupFile)) {
+                        throw new IllegalStateException(
+                                "Cannot safely preserve the existing model file.");
+                    }
+                    movedOldFile = true;
                 }
 
                 if (!temporaryFile.renameTo(destinationFile)) {
-
+                    if (movedOldFile) {
+                        backupFile.renameTo(destinationFile);
+                    }
                     throw new IllegalStateException(
-                            "Unable to finalize imported file.");
+                            "Unable to finalize imported file. "
+                                    + "The previous file was restored when possible.");
+                }
+
+                if (backupFile.exists()) {
+                    backupFile.delete();
                 }
 
                 runOnUiThread(() -> {
@@ -625,8 +942,8 @@ public class MainActivity extends AppCompatActivity {
 
                         importStep = 2;
 
-                        txtProtectionStatus.setText(
-                                "Model imported. Select tokenizer.");
+                        setStatus("Model imported. Select tokenizer.",
+                                STATUS_SUCCESS, false);
 
                         txtExplanation.setText(
                                 "Now select tokenizer.model.");
@@ -640,26 +957,28 @@ public class MainActivity extends AppCompatActivity {
 
                         progressBar.setVisibility(View.GONE);
 
-                        btnImportLlama.setEnabled(true);
                         btnAnalyze.setEnabled(
                                 classifier != null
                                         && classifier.isModelLoaded());
 
-                        btnExplain.setEnabled(
-                                latestResult != null);
+                        btnExplain.setEnabled(latestResult != null);
 
-                        txtProtectionStatus.setText(
-                                "Llama model and tokenizer imported");
+                        setStatus("Llama model and tokenizer imported",
+                                STATUS_SUCCESS, false);
 
                         txtExplanation.setText(
-                                "Files imported successfully. "
-                                        + "Analyze a message and select Explain with AI.");
+                                "Model files are ready. Loading Llama for your explanation...");
 
                         Toast.makeText(
                                 MainActivity.this,
-                                "Llama files imported successfully.",
-                                Toast.LENGTH_LONG
+                                "Llama model and tokenizer imported.",
+                                Toast.LENGTH_SHORT
                         ).show();
+
+                        if (explainAfterImport && latestResult != null) {
+                            explainAfterImport = false;
+                            explainMessage();
+                        }
                     }
                 });
 
@@ -681,10 +1000,10 @@ public class MainActivity extends AppCompatActivity {
 
         isImporting = false;
         importStep = 0;
+        explainAfterImport = false;
 
         progressBar.setVisibility(View.GONE);
 
-        btnImportLlama.setEnabled(true);
 
         btnAnalyze.setEnabled(
                 classifier != null
@@ -697,11 +1016,11 @@ public class MainActivity extends AppCompatActivity {
                         && !isClassifying
                         && !isExplaining);
 
-        txtProtectionStatus.setText(
-                "Llama import failed");
+        setStatus("Llama import failed", STATUS_ERROR, true);
 
         txtExplanation.setText(
                 "Import failed:\n" + message);
+        setFeedbackBackground(txtExplanation, STATUS_ERROR);
 
         Toast.makeText(
                 this,
@@ -747,7 +1066,6 @@ public class MainActivity extends AppCompatActivity {
 
         btnAnalyze.setEnabled(false);
         btnExplain.setEnabled(false);
-        btnImportLlama.setEnabled(false);
 
         progressBar.setVisibility(View.VISIBLE);
 
@@ -757,8 +1075,7 @@ public class MainActivity extends AppCompatActivity {
         txtExplanation.setText(
                 "Waiting for classification result.");
 
-        txtProtectionStatus.setText(
-                "SMS classification in progress");
+        setStatus("SMS classification in progress", STATUS_INFO, false);
 
         classificationStartTime =
                 SystemClock.elapsedRealtime();
@@ -798,7 +1115,6 @@ public class MainActivity extends AppCompatActivity {
                                 isClassifying = false;
 
                                 btnAnalyze.setEnabled(true);
-                                btnImportLlama.setEnabled(true);
 
                                 progressBar.setVisibility(
                                         View.GONE);
@@ -878,31 +1194,20 @@ public class MainActivity extends AppCompatActivity {
                                         .append(elapsedTime)
                                         .append(" ms\n\n");
 
-                                details.append("INDICATORS\n");
-
-                                if (result.getIndicators().isEmpty()) {
-
-                                    details.append(
-                                            "No indicators supplied.");
-
-                                } else {
-
-                                    for (String indicator :
-                                            result.getIndicators()) {
-
-                                        details.append("- ")
-                                                .append(indicator)
-                                                .append("\n");
-                                    }
-                                }
-
                                 txtDetectionResult.setText(
                                         details.toString());
-
-                                txtProtectionStatus.setText(
+                                setFeedbackBackground(
+                                        txtDetectionResult,
                                         result.isSuspicious()
-                                                ? "Potential spam detected"
-                                                : "Not flagged as spam");
+                                                ? STATUS_ERROR
+                                                : STATUS_SUCCESS);
+
+                                setStatus(
+                                        result.isSuspicious()
+                                                ? "Potential spam or scam detected"
+                                                : "Not flagged as spam",
+                                        result.isSuspicious() ? STATUS_ERROR : STATUS_SUCCESS,
+                                        false);
 
                                 btnExplain.setEnabled(true);
 
@@ -927,7 +1232,6 @@ public class MainActivity extends AppCompatActivity {
 
                                 btnAnalyze.setEnabled(true);
                                 btnExplain.setEnabled(false);
-                                btnImportLlama.setEnabled(true);
 
                                 progressBar.setVisibility(
                                         View.GONE);
@@ -935,9 +1239,10 @@ public class MainActivity extends AppCompatActivity {
                                 txtDetectionResult.setText(
                                         "Classification failed:\n"
                                                 + message);
+                                setFeedbackBackground(
+                                        txtDetectionResult, STATUS_ERROR);
 
-                                txtProtectionStatus.setText(
-                                        "Detection unavailable");
+                                setStatus("Detection unavailable", STATUS_ERROR, true);
                             });
                         }
                     });
@@ -947,13 +1252,13 @@ public class MainActivity extends AppCompatActivity {
             isClassifying = false;
 
             btnAnalyze.setEnabled(true);
-            btnImportLlama.setEnabled(true);
 
             progressBar.setVisibility(View.GONE);
 
             txtDetectionResult.setText(
                     "Classification failed:\n"
                             + safeMessage(error));
+            setStatus("Classification failed", STATUS_ERROR, true);
         }
     }
 
@@ -965,15 +1270,21 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        if (latestResult == null
-                || latestMessage == null) {
+        if (latestResult == null || latestMessage == null) {
+            setStatus("Analyze an SMS before requesting an AI explanation.",
+                    STATUS_WARNING, false);
+            Toast.makeText(this, "Analyze a message first.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
 
-            Toast.makeText(
-                    this,
-                    "Analyze a message first.",
-                    Toast.LENGTH_SHORT
-            ).show();
-
+        if (!areLlamaFilesReady()) {
+            explainAfterImport = true;
+            txtExplanation.setText(
+                    "Select the Llama .pte model and tokenizer.model. "
+                            + "After both files are imported, the AI explanation will start automatically.");
+            setFeedbackBackground(txtExplanation, STATUS_INFO);
+            startLlamaImport();
             return;
         }
 
@@ -981,12 +1292,13 @@ public class MainActivity extends AppCompatActivity {
 
         btnAnalyze.setEnabled(false);
         btnExplain.setEnabled(false);
-        btnImportLlama.setEnabled(false);
 
         progressBar.setVisibility(View.VISIBLE);
 
         txtExplanation.setText(
-                "Generating on-device AI explanation...");
+                "Loading Llama and generating an on-device explanation...");
+        setFeedbackBackground(txtExplanation, STATUS_INFO);
+        setStatus("Loading local Llama model...", STATUS_INFO, false);
 
         final String message = latestMessage;
         final MessageClassification result = latestResult;
@@ -1008,14 +1320,18 @@ public class MainActivity extends AppCompatActivity {
                             isExplaining = false;
 
                             btnAnalyze.setEnabled(true);
-                            btnExplain.setEnabled(true);
-                            btnImportLlama.setEnabled(true);
+                            btnExplain.setEnabled(
+                                    latestResult != null);
 
                             progressBar.setVisibility(
                                     View.GONE);
 
                             txtExplanation.setText(
                                     explanation);
+                            setFeedbackBackground(
+                                    txtExplanation, STATUS_SUCCESS);
+                            setStatus("AI explanation completed. Llama resources released.",
+                                    STATUS_SUCCESS, false);
                         });
                     }
 
@@ -1031,8 +1347,8 @@ public class MainActivity extends AppCompatActivity {
                             isExplaining = false;
 
                             btnAnalyze.setEnabled(true);
-                            btnExplain.setEnabled(true);
-                            btnImportLlama.setEnabled(true);
+                            btnExplain.setEnabled(
+                                    latestResult != null);
 
                             progressBar.setVisibility(
                                     View.GONE);
@@ -1040,9 +1356,157 @@ public class MainActivity extends AppCompatActivity {
                             txtExplanation.setText(
                                     "Explanation failed:\n"
                                             + message);
+                            setFeedbackBackground(
+                                    txtExplanation, STATUS_ERROR);
+                            setStatus("AI explanation failed", STATUS_ERROR, true);
                         });
                     }
                 });
+    }
+
+    private boolean areLlamaFilesReady() {
+        File directory = new File(getFilesDir(), "llama");
+        File model = new File(directory, MODEL_FILE);
+        File tokenizer = new File(directory, TOKENIZER_FILE);
+
+        return model.isFile()
+                && model.length() == MODEL_SIZE
+                && tokenizer.isFile()
+                && tokenizer.length() == TOKENIZER_SIZE;
+    }
+
+    private void setStatus(
+            String message,
+            int statusType,
+            boolean notify) {
+
+        txtProtectionStatus.setText(message);
+
+        int backgroundColor;
+        int foregroundColor;
+
+        if (statusType == STATUS_SUCCESS) {
+            backgroundColor = getColor(R.color.status_success_container);
+            foregroundColor = getColor(R.color.status_success_text);
+        } else if (statusType == STATUS_WARNING) {
+            backgroundColor = getColor(R.color.status_warning_container);
+            foregroundColor = getColor(R.color.status_warning_text);
+        } else if (statusType == STATUS_ERROR) {
+            backgroundColor = getColor(R.color.status_error_container);
+            foregroundColor = getColor(R.color.status_error_text);
+        } else {
+            backgroundColor = getColor(R.color.status_info_container);
+            foregroundColor = getColor(R.color.status_info_text);
+        }
+
+        txtProtectionStatus.setBackgroundTintList(
+                ColorStateList.valueOf(backgroundColor));
+        txtProtectionStatus.setTextColor(foregroundColor);
+
+        if (notify && statusType == STATUS_ERROR) {
+            showErrorNotification(message);
+        }
+    }
+
+    private void setFeedbackBackground(
+            TextView view,
+            int statusType) {
+
+        int backgroundColor;
+        int foregroundColor;
+
+        if (statusType == STATUS_SUCCESS) {
+            backgroundColor = getColor(R.color.status_success_container);
+            foregroundColor = getColor(R.color.status_success_text);
+        } else if (statusType == STATUS_WARNING) {
+            backgroundColor = getColor(R.color.status_warning_container);
+            foregroundColor = getColor(R.color.status_warning_text);
+        } else if (statusType == STATUS_ERROR) {
+            backgroundColor = getColor(R.color.status_error_container);
+            foregroundColor = getColor(R.color.status_error_text);
+        } else {
+            backgroundColor = getColor(R.color.status_info_container);
+            foregroundColor = getColor(R.color.status_info_text);
+        }
+
+        view.setBackgroundTintList(
+                ColorStateList.valueOf(backgroundColor));
+        view.setTextColor(foregroundColor);
+    }
+
+    private void createErrorNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    ERROR_CHANNEL_ID,
+                    "OnDeviceGuard errors",
+                    NotificationManager.IMPORTANCE_DEFAULT);
+
+            channel.setDescription(
+                    "Important model and protection errors");
+
+            NotificationManager manager =
+                    getSystemService(NotificationManager.class);
+
+            if (manager != null) {
+                manager.createNotificationChannel(channel);
+            }
+        }
+    }
+
+    private void showErrorNotification(String message) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(
+                Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+
+        NotificationManager manager =
+                (NotificationManager) getSystemService(
+                        NOTIFICATION_SERVICE);
+
+        if (manager == null) {
+            return;
+        }
+
+        Notification.Builder builder;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, ERROR_CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this);
+        }
+
+        Notification notification = builder
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("OnDeviceGuard needs attention")
+                .setContentText(message)
+                .setStyle(new Notification.BigTextStyle().bigText(message))
+                .setAutoCancel(true)
+                .build();
+
+        try {
+            manager.notify(
+                    (int) (System.currentTimeMillis() & 0x7fffffff),
+                    notification);
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (resourceMonitor != null) {
+            resourceMonitor.start();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (resourceMonitor != null) {
+            resourceMonitor.stop();
+        }
+        super.onPause();
     }
 
     private String safeMessage(Exception error) {
@@ -1058,6 +1522,18 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+
+        if (resourceMonitor != null) {
+            resourceMonitor.stop();
+        }
+
+        if (networkReceiverRegistered) {
+            try {
+                unregisterReceiver(networkStatusReceiver);
+            } catch (Exception ignored) {
+            }
+            networkReceiverRegistered = false;
+        }
 
         modelExecutor.shutdownNow();
         importExecutor.shutdownNow();

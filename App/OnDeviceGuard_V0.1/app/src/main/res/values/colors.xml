@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <color name="md_primary">#405A9A</color>
+    <color name="md_on_primary">#FFFFFF</color>
+    <color name="md_secondary">#52617D</color>
+    <color name="md_on_secondary">#FFFFFF</color>
+    <color name="md_tertiary">#705575</color>
+    <color name="md_surface">#F9F9FF</color>
+    <color name="md_on_surface">#191B22</color>
+    <color name="md_error">#BA1A1A</color>
+
+    <color name="status_success_container">#D9F2E1</color>
+    <color name="status_success_text">#14532D</color>
+    <color name="status_info_container">#DCE8FF</color>
+    <color name="status_info_text">#193B70</color>
+    <color name="status_warning_container">#FFF0C2</color>
+    <color name="status_warning_text">#714B00</color>
+    <color name="status_error_container">#FCE1DF</color>
+    <color name="status_error_text">#8C1D18</color>
 </resources>
