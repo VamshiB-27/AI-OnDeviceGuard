@@ -1,4 +1,3 @@
-
 package com.vcs.ondeviceguard;
 
 import android.Manifest;
@@ -10,18 +9,35 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.provider.Telephony;
 import android.telephony.SmsMessage;
+import android.provider.Telephony;
 import android.util.Log;
 
-import com.vcs.ondeviceguard.model.DemoMessageClassifier;
 import com.vcs.ondeviceguard.model.MessageClassification;
 import com.vcs.ondeviceguard.model.MessageClassifier;
+import com.vcs.ondeviceguard.model.OnDeviceSvmClassifier;
+import com.vcs.ondeviceguard.security.UrlScanResult;
+import com.vcs.ondeviceguard.security.UrlThreatScanner;
+
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SmsReceiver extends BroadcastReceiver {
 
-    private static final String TAG = "SmsReceiver";
-    private static final String CHANNEL_ID = "sms_threat_alerts";
+    private static final String TAG = "OnDeviceGuardSMS";
+    private static final String CHANNEL_ID = "threat_alerts";
+
+    private static final ExecutorService EXECUTOR =
+            Executors.newSingleThreadExecutor();
+
+    private static final Object MODEL_LOCK = new Object();
+
+    private static volatile OnDeviceSvmClassifier sharedClassifier;
+
+    private static final UrlThreatScanner URL_SCANNER =
+            new UrlThreatScanner();
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -39,95 +55,219 @@ public class SmsReceiver extends BroadcastReceiver {
             return;
         }
 
-        StringBuilder messageBuilder = new StringBuilder();
+        StringBuilder builder = new StringBuilder();
+        String sender = "Unknown";
 
-        for (SmsMessage sms : messages) {
-            if (sms != null && sms.getMessageBody() != null) {
-                messageBuilder.append(sms.getMessageBody());
+        for (SmsMessage message : messages) {
+
+            if (message == null) {
+                continue;
+            }
+
+            String body = message.getMessageBody();
+
+            if (body != null) {
+                builder.append(body);
+            }
+
+            String address =
+                    message.getOriginatingAddress();
+
+            if (address != null) {
+                sender = address;
             }
         }
 
-        String messageText = messageBuilder.toString().trim();
+        String smsText = builder.toString().trim();
 
-        if (messageText.isEmpty()) {
+        if (smsText.isEmpty()) {
             return;
         }
 
-        Context appContext = context.getApplicationContext();
+        Context appContext =
+                context.getApplicationContext();
 
-        Log.d(TAG, "Incoming SMS received for local analysis.");
+        String finalSender = sender;
 
-        createNotificationChannel(appContext);
-
-        // Keep the receiver active while background classification runs.
         PendingResult pendingResult = goAsync();
 
-        // Temporary demo implementation; replace with the trained model later.
-        DemoMessageClassifier classifier =
-                new DemoMessageClassifier();
+        AtomicBoolean finished = new AtomicBoolean(false);
+
+        Runnable finish = () -> {
+
+            if (finished.compareAndSet(false, true)) {
+                pendingResult.finish();
+            }
+        };
 
         try {
-            classifier.classify(
-                    messageText,
-                    new MessageClassifier.Callback() {
 
-                        @Override
-                        public void onSuccess(
-                                MessageClassification result) {
+            EXECUTOR.execute(() -> {
 
-                            try {
-                                Log.d(TAG,
-                                        "Classification: "
-                                                + result.getLabel());
+                OnDeviceSvmClassifier classifier = null;
 
-                                if (result.isSuspicious()) {
-                                    showNotification(
-                                            appContext, result);
+                try {
+
+                    createNotificationChannel(appContext);
+
+                    classifier = getClassifier(appContext);
+
+                    List<UrlScanResult> urlResults =
+                            URL_SCANNER.scanText(smsText);
+
+                    classifier.classify(
+                            smsText,
+                            new MessageClassifier.Callback() {
+
+                                @Override
+                                public void onSuccess(
+                                        MessageClassification result) {
+
+                                    try {
+
+                                        boolean suspiciousUrl = false;
+
+                                        StringBuilder urlDetails =
+                                                new StringBuilder();
+
+                                        for (UrlScanResult urlResult :
+                                                urlResults) {
+
+                                            if (urlResult.isSuspicious()) {
+
+                                                suspiciousUrl = true;
+
+                                                urlDetails.append(
+                                                                "URL: ")
+                                                        .append(
+                                                                urlResult.getUrl())
+                                                        .append("\n");
+
+                                                for (String indicator :
+                                                        urlResult.getIndicators()) {
+
+                                                    urlDetails.append("- ")
+                                                            .append(indicator)
+                                                            .append("\n");
+                                                }
+                                            }
+                                        }
+
+                                        if (result.isSuspicious()
+                                                || suspiciousUrl) {
+
+                                            showThreatNotification(
+                                                    appContext,
+                                                    finalSender,
+                                                    result,
+                                                    suspiciousUrl,
+                                                    urlDetails.toString());
+                                        }
+
+                                        Log.i(
+                                                TAG,
+                                                "SMS result: "
+                                                        + result.getLabel()
+                                                        + ", URL warning: "
+                                                        + suspiciousUrl);
+
+                                    } catch (Exception error) {
+
+                                        Log.e(
+                                                TAG,
+                                                "SMS result processing failed",
+                                                error);
+
+                                    } finally {
+
+                                        finish.run();
+                                    }
                                 }
 
-                            } catch (Exception e) {
-                                Log.e(TAG,
-                                        "Could not process SMS result", e);
-                            } finally {
-                                classifier.shutdown();
-                                pendingResult.finish();
-                            }
-                        }
+                                @Override
+                                public void onError(String error) {
 
-                        @Override
-                        public void onError(String error) {
-                            try {
-                                Log.e(TAG,
-                                        "Classification failed: " + error);
-                            } finally {
-                                classifier.shutdown();
-                                pendingResult.finish();
-                            }
-                        }
-                    });
+                                    Log.e(
+                                            TAG,
+                                            "SMS classification failed: "
+                                                    + error);
 
-        } catch (Exception e) {
-            Log.e(TAG, "Could not start SMS classification", e);
-            classifier.shutdown();
-            pendingResult.finish();
+                                    finish.run();
+                                }
+                            });
+
+                } catch (Exception error) {
+
+                    Log.e(
+                            TAG,
+                            "Unable to process incoming SMS",
+                            error);
+
+                    finish.run();
+                }
+            });
+
+        } catch (RuntimeException error) {
+
+            Log.e(TAG, "SMS executor unavailable", error);
+
+            finish.run();
         }
     }
 
-    private void createNotificationChannel(Context context) {
+    private static OnDeviceSvmClassifier getClassifier(
+            Context context) throws Exception {
+
+        if (sharedClassifier != null
+                && sharedClassifier.isModelLoaded()) {
+            return sharedClassifier;
+        }
+
+        synchronized (MODEL_LOCK) {
+
+            if (sharedClassifier == null
+                    || !sharedClassifier.isModelLoaded()) {
+
+                OnDeviceSvmClassifier newClassifier =
+                        new OnDeviceSvmClassifier(context);
+
+                if (!newClassifier.isModelLoaded()) {
+
+                    String error =
+                            newClassifier.getLoadError();
+
+                    newClassifier.shutdown();
+
+                    throw new IllegalStateException(
+                            error == null
+                                    ? "SMS model could not be loaded."
+                                    : error);
+                }
+
+                sharedClassifier = newClassifier;
+            }
+
+            return sharedClassifier;
+        }
+    }
+
+    private static void createNotificationChannel(
+            Context context) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
             NotificationChannel channel =
                     new NotificationChannel(
                             CHANNEL_ID,
-                            "SMS Threat Alerts",
+                            "Security Threat Alerts",
                             NotificationManager.IMPORTANCE_HIGH);
 
             channel.setDescription(
-                    "Alerts for potentially suspicious SMS messages");
+                    "SMS scam and phishing notifications");
 
             NotificationManager manager =
-                    context.getSystemService(NotificationManager.class);
+                    context.getSystemService(
+                            NotificationManager.class);
 
             if (manager != null) {
                 manager.createNotificationChannel(channel);
@@ -135,9 +275,12 @@ public class SmsReceiver extends BroadcastReceiver {
         }
     }
 
-    private void showNotification(
+    private static void showThreatNotification(
             Context context,
-            MessageClassification result) {
+            String sender,
+            MessageClassification result,
+            boolean suspiciousUrl,
+            String urlDetails) {
 
         if (Build.VERSION.SDK_INT >= 33
                 && context.checkSelfPermission(
@@ -156,38 +299,66 @@ public class SmsReceiver extends BroadcastReceiver {
             return;
         }
 
-        String label = result.getLabel().toUpperCase(
-                java.util.Locale.ROOT);
+        String title;
 
-        String notificationText =
-                "A potentially suspicious SMS was detected. "
-                        + "Review the message before taking action.";
+        if (suspiciousUrl && result.isSuspicious()) {
 
-        Notification.Builder builder;
+            title = "SMS Scam and Phishing Warning";
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder = new Notification.Builder(context, CHANNEL_ID);
+        } else if (suspiciousUrl) {
+
+            title = "Suspicious URL Detected";
+
         } else {
-            builder = new Notification.Builder(context);
+
+            title = "Potential SMS Scam Detected";
         }
 
-        Notification notification = builder
-                .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("OnDeviceGuard: " + label)
-                .setContentText(notificationText)
-                .setStyle(new Notification.BigTextStyle()
-                        .bigText(notificationText))
-                .setAutoCancel(true)
-                .build();
+        StringBuilder content = new StringBuilder();
+
+        content.append("Sender: ")
+                .append(sender)
+                .append("\n");
+
+        content.append("SMS result: ")
+                .append(result.getLabel())
+                .append("\n");
+
+        content.append(
+                "Do not share OTPs, passwords or banking details.");
+
+        if (!urlDetails.isEmpty()) {
+
+            content.append("\n\nURL analysis:\n")
+                    .append(urlDetails);
+        }
+
+        Notification notification =
+                new Notification.Builder(context, CHANNEL_ID)
+                        .setSmallIcon(
+                                android.R.drawable.ic_dialog_alert)
+                        .setContentTitle(title)
+                        .setContentText(
+                                "Review this message carefully.")
+                        .setStyle(
+                                new Notification.BigTextStyle()
+                                        .bigText(content.toString()))
+                        .setAutoCancel(true)
+                        .build();
 
         try {
-            int notificationId =
-                    (int) (System.currentTimeMillis() & 0x7fffffff);
 
-            manager.notify(notificationId, notification);
+            manager.notify(
+                    (int) (System.currentTimeMillis()
+                            & 0x7fffffff),
+                    notification);
 
-        } catch (SecurityException e) {
-            Log.e(TAG, "Unable to post notification", e);
+        } catch (SecurityException error) {
+
+            Log.e(
+                    TAG,
+                    "Notification permission unavailable",
+                    error);
         }
     }
 }

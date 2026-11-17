@@ -1,3 +1,4 @@
+
 [versions]
 agp = "9.2.1"
 junit = "4.13.2"
@@ -7,6 +8,7 @@ appcompat = "1.8.0"
 material = "1.14.0"
 activityKtx = "1.13.0"
 constraintlayout = "2.2.2"
+executorch = "1.4.0"
 
 [libraries]
 junit = { group = "junit", name = "junit", version.ref = "junit" }
@@ -16,7 +18,7 @@ appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "a
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activityKtx" }
 constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+executorch-android = { group = "org.pytorch", name = "executorch-android", version.ref = "executorch" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-
