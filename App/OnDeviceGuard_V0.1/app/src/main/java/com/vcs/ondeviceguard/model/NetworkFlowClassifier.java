@@ -21,6 +21,7 @@ public final class NetworkFlowClassifier {
 
     private double intercept;
     private double threshold;
+    private boolean closed;
 
     public NetworkFlowClassifier(Context context) throws Exception {
         loadModel(context);
@@ -117,6 +118,10 @@ public final class NetworkFlowClassifier {
 
     public NetworkFlowResult classify(double[] features) {
 
+        if (closed) {
+            throw new IllegalStateException("Network classifier is closed.");
+        }
+
         if (features == null
                 || features.length != FEATURE_COUNT) {
             throw new IllegalArgumentException(
@@ -160,5 +165,17 @@ public final class NetworkFlowClassifier {
                 label,
                 score,
                 probability);
+    }
+    public void close() {
+        if (closed) {
+            return;
+        }
+        java.util.Arrays.fill(medians, 0.0);
+        java.util.Arrays.fill(means, 0.0);
+        java.util.Arrays.fill(scales, 0.0);
+        java.util.Arrays.fill(coefficients, 0.0);
+        intercept = 0.0;
+        threshold = 0.0;
+        closed = true;
     }
 }

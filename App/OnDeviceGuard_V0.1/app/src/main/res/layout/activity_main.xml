@@ -5,7 +5,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="?attr/colorSurface"
+    android:background="@color/md_surface"
     android:clipToPadding="false"
     android:fillViewport="true"
     android:overScrollMode="never">
@@ -35,7 +35,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/app_name"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="28sp"
                     android:textStyle="bold" />
 
@@ -44,7 +44,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="3dp"
                     android:text="@string/app_subtitle"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="14sp" />
             </LinearLayout>
 
@@ -73,10 +73,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+            app:cardBackgroundColor="@color/md_surface_container"
             app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
-            app:strokeColor="?attr/colorOutlineVariant"
+            app:strokeColor="@color/md_outline"
             app:strokeWidth="1dp">
 
             <LinearLayout
@@ -89,7 +89,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/resource_monitor_title"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="18sp"
                     android:textStyle="bold" />
 
@@ -98,7 +98,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="@string/resource_monitor_subtitle"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="12sp" />
 
                 <TextView
@@ -109,7 +109,7 @@
                     android:fontFamily="monospace"
                     android:lineSpacingExtra="5dp"
                     android:text="@string/resource_monitor_loading"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="13sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -118,10 +118,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+            app:cardBackgroundColor="@color/md_surface_container"
             app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
-            app:strokeColor="?attr/colorOutlineVariant"
+            app:strokeColor="@color/md_outline"
             app:strokeWidth="1dp">
 
             <LinearLayout
@@ -134,7 +134,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/sms_section_title"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="19sp"
                     android:textStyle="bold" />
 
@@ -143,7 +143,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="@string/sms_section_subtitle"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="13sp" />
 
                 <com.google.android.material.textfield.TextInputLayout
@@ -152,7 +152,7 @@
                     android:layout_marginTop="14dp"
                     android:hint="@string/message_hint"
                     app:boxBackgroundMode="outline"
-                    app:boxStrokeColor="?attr/colorPrimary"
+                    app:boxStrokeColor="@color/md_primary"
                     app:counterEnabled="true"
                     app:counterMaxLength="10000">
 
@@ -163,13 +163,13 @@
                         android:gravity="top|start"
                         android:inputType="textMultiLine|textCapSentences"
                         android:maxLength="10000"
-                        android:textColor="?attr/colorOnSurface"
+                        android:textColor="@color/md_on_surface"
                         android:textSize="15sp" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnLoadLatestSms"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
@@ -192,7 +192,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="18dp"
                     android:text="@string/detection_result_title"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
@@ -206,7 +206,7 @@
                     android:minHeight="72dp"
                     android:padding="14dp"
                     android:text="@string/detection_placeholder"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textIsSelectable="true"
                     android:textSize="14sp" />
             </LinearLayout>
@@ -216,10 +216,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+            app:cardBackgroundColor="@color/md_surface_container"
             app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
-            app:strokeColor="?attr/colorOutlineVariant"
+            app:strokeColor="@color/md_outline"
             app:strokeWidth="1dp">
 
             <LinearLayout
@@ -232,7 +232,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/url_section_title"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="19sp"
                     android:textStyle="bold" />
 
@@ -241,7 +241,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="@string/url_section_subtitle"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="13sp" />
 
                 <com.google.android.material.textfield.TextInputLayout
@@ -250,7 +250,7 @@
                     android:layout_marginTop="14dp"
                     android:hint="@string/url_hint"
                     app:boxBackgroundMode="outline"
-                    app:boxStrokeColor="?attr/colorPrimary">
+                    app:boxStrokeColor="@color/md_primary">
 
                     <com.google.android.material.textfield.TextInputEditText
                         android:id="@+id/editUrl"
@@ -258,13 +258,13 @@
                         android:layout_height="wrap_content"
                         android:inputType="textUri"
                         android:maxLines="1"
-                        android:textColor="?attr/colorOnSurface"
+                        android:textColor="@color/md_on_surface"
                         android:textSize="15sp" />
                 </com.google.android.material.textfield.TextInputLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnScanUrl"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
@@ -282,7 +282,7 @@
                     android:minHeight="64dp"
                     android:padding="14dp"
                     android:text="@string/url_result_placeholder"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textIsSelectable="true"
                     android:textSize="14sp" />
             </LinearLayout>
@@ -293,10 +293,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+            app:cardBackgroundColor="@color/md_surface_container"
             app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
-            app:strokeColor="?attr/colorOutlineVariant"
+            app:strokeColor="@color/md_outline"
             app:strokeWidth="1dp">
 
             <LinearLayout
@@ -309,7 +309,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Network threat protection"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="19sp"
                     android:textStyle="bold" />
 
@@ -318,7 +318,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="5dp"
                     android:text="Monitor DNS requests locally. Suspicious domains matching local URL heuristics are blocked."
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="13sp" />
 
                 <TextView
@@ -329,7 +329,7 @@
                     android:background="@drawable/bg_result"
                     android:padding="14dp"
                     android:text="Network protection is off."
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="14sp" />
 
                 <com.google.android.material.button.MaterialButton
@@ -343,7 +343,7 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnStopNetworkProtection"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
@@ -356,7 +356,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:text="Note: This monitors DNS over UDP/53. DNS-over-HTTPS, DNS-over-TLS, and non-DNS packet-flow attacks are not inspected by this module."
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="11sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -365,10 +365,10 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+            app:cardBackgroundColor="@color/md_surface_container"
             app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
-            app:strokeColor="?attr/colorOutlineVariant"
+            app:strokeColor="@color/md_outline"
             app:strokeWidth="1dp">
 
             <LinearLayout
@@ -381,7 +381,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="@string/ai_section_title"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textSize="19sp"
                     android:textStyle="bold" />
 
@@ -390,7 +390,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="@string/ai_section_subtitle"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textColor="@color/md_on_surface_variant"
                     android:textSize="13sp" />
 
 
@@ -423,7 +423,7 @@
                     android:minHeight="72dp"
                     android:padding="14dp"
                     android:text="@string/explanation_placeholder"
-                    android:textColor="?attr/colorOnSurface"
+                    android:textColor="@color/md_on_surface"
                     android:textIsSelectable="true"
                     android:textSize="14sp" />
             </LinearLayout>
@@ -435,7 +435,7 @@
             android:layout_marginTop="22dp"
             android:gravity="center"
             android:text="@string/footer_text"
-            android:textColor="?attr/colorOnSurfaceVariant"
+            android:textColor="@color/md_on_surface_variant"
             android:textSize="12sp" />
 
     </LinearLayout>

@@ -1,31 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Base.Theme.OnDeviceGuard" parent="Theme.Material3.DayNight.NoActionBar">
-
+    <style name="Base.Theme.OnDeviceGuard" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/md_primary</item>
+        <item name="colorPrimaryVariant">@color/md_primary_variant</item>
         <item name="colorOnPrimary">@color/md_on_primary</item>
-
         <item name="colorSecondary">@color/md_secondary</item>
+        <item name="colorSecondaryVariant">@color/md_secondary_variant</item>
         <item name="colorOnSecondary">@color/md_on_secondary</item>
-
-        <item name="colorTertiary">@color/md_tertiary</item>
-
         <item name="colorSurface">@color/md_surface</item>
         <item name="colorOnSurface">@color/md_on_surface</item>
-
         <item name="colorError">@color/md_error</item>
-
-        <item name="android:statusBarColor">?attr/colorSurface</item>
-        <item name="android:navigationBarColor">?attr/colorSurface</item>
-
+        <item name="android:statusBarColor">@color/md_surface</item>
+        <item name="android:navigationBarColor">@color/md_surface</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
-
         <item name="android:windowActionModeOverlay">true</item>
-
     </style>
-
     <style name="Theme.OnDeviceGuard" parent="Base.Theme.OnDeviceGuard" />
-
 </resources>

@@ -44,6 +44,7 @@ import com.vcs.ondeviceguard.model.MessageClassification;
 import com.vcs.ondeviceguard.model.MessageClassifier;
 import com.vcs.ondeviceguard.model.OnDeviceSvmClassifier;
 import com.vcs.ondeviceguard.security.UrlScanResult;
+import com.vcs.ondeviceguard.security.UrlPhishingClassifier;
 import com.vcs.ondeviceguard.security.UrlThreatScanner;
 
 import java.io.File;
@@ -98,6 +99,11 @@ public class MainActivity extends AppCompatActivity {
     private MessageClassification latestResult;
     private String latestMessage;
 
+    private String latestExplanationType;
+    private String latestEvidence;
+    private String latestClassification;
+    private List<String> latestIndicators = java.util.Collections.emptyList();
+
     private boolean isModelLoading;
     private boolean isClassifying;
     private boolean isExplaining;
@@ -131,14 +137,21 @@ public class MainActivity extends AppCompatActivity {
                             NetworkProtectionService.EXTRA_BLOCKED, false);
 
                     if (status != null) {
+                        boolean warning = status.startsWith(
+                                "Potentially risky domain observed");
+
+                        int severity = blocked
+                                ? STATUS_ERROR
+                                : warning ? STATUS_WARNING : STATUS_SUCCESS;
+
                         txtNetworkStatus.setText(status);
                         setFeedbackBackground(
                                 txtNetworkStatus,
-                                blocked ? STATUS_ERROR : STATUS_INFO);
-                        setStatus(
-                                status,
-                                blocked ? STATUS_ERROR : STATUS_SUCCESS,
-                                false);
+                                severity);
+                        setStatus(status, severity, false);
+                        if (intent.hasExtra(NetworkProtectionService.EXTRA_DOMAIN)) {
+                            loadLatestNetworkResult();
+                        }
                     }
                 }
             };
@@ -406,7 +419,7 @@ public class MainActivity extends AppCompatActivity {
                 v -> loadLatestSms());
 
         btnExplain.setOnClickListener(
-                v -> explainMessage());
+                v -> explainLatestSecurityEvent());
 
 
         btnScanUrl.setOnClickListener(
@@ -657,113 +670,140 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        String url = editUrl.getText()
-                .toString()
-                .trim();
-
+        String url = editUrl.getText().toString().trim();
         if (url.isEmpty()) {
-
             editUrl.setError("Enter a URL");
             return;
         }
 
         isScanningUrl = true;
-
         btnScanUrl.setEnabled(false);
-
-        txtUrlResult.setText(
-                "Analyzing URL...");
+        txtUrlResult.setText("Analyzing URL with the ML model and heuristic scanner...");
 
         urlExecutor.execute(() -> {
+            UrlPhishingClassifier mlClassifier = null;
 
             try {
+                UrlScanResult heuristicResult = urlScanner.scanUrl(url);
+                mlClassifier = new UrlPhishingClassifier(getApplicationContext());
+                UrlPhishingClassifier.Result mlResult = mlClassifier.classify(url);
 
-                UrlScanResult result =
-                        urlScanner.scanUrl(url);
+                StringBuilder output = new StringBuilder();
+                output.append("URL SECURITY ANALYSIS\n\n");
+                output.append("URL: ").append(url).append("\n\n");
 
-                StringBuilder output =
-                        new StringBuilder();
+                output.append("MACHINE-LEARNING RESULT\n");
+                output.append("Model: StandardScaler + Logistic Regression\n");
+                output.append("Prediction: ")
+                        .append(mlResult.getLabel().toUpperCase(Locale.ROOT))
+                        .append("\n");
+                output.append(String.format(
+                        Locale.US,
+                        "Decision score: %.6f\nModel probability: %.2f%%\n\n",
+                        mlResult.getScore(),
+                        mlResult.getProbability() * 100.0));
 
-                output.append("URL ANALYSIS\n\n");
+                output.append("HEURISTIC SCANNER RESULT\n");
+                output.append("Prediction: ")
+                        .append(heuristicResult.isSuspicious()
+                                ? "SUSPICIOUS PATTERN"
+                                : "NO HIGH-RISK HEURISTIC FOUND")
+                        .append("\n");
 
-                output.append("URL: ")
-                        .append(result.getUrl())
-                        .append("\n\n");
-
-                output.append("RESULT: ");
-
-                output.append(
-                        result.isSuspicious()
-                                ? "SUSPICIOUS"
-                                : "NO HEURISTIC WARNING");
-
-                output.append("\n\nINDICATORS\n");
-
-                List<String> indicators =
-                        result.getIndicators();
-
-                if (indicators.isEmpty()) {
-
-                    output.append(
-                            "No suspicious URL patterns detected.");
-
+                List<String> heuristicIndicators = heuristicResult.getIndicators();
+                if (heuristicIndicators == null || heuristicIndicators.isEmpty()) {
+                    output.append("- No heuristic indicators were returned.\n");
                 } else {
-
-                    for (String indicator : indicators) {
-
-                        output.append("- ")
-                                .append(indicator)
-                                .append("\n");
+                    for (String indicator : heuristicIndicators) {
+                        output.append("- ").append(indicator).append("\n");
                     }
                 }
 
-                output.append(
-                        "\nThis is local heuristic analysis. "
-                                + "It does not guarantee that a URL is safe.");
+                output.append("\nThe ML prediction and heuristic result are independent. "
+                        + "Neither result proves that a URL is safe or malicious.");
 
+                String mlLabel = mlResult.getLabel();
+                String storedClassification = mlLabel.toUpperCase(Locale.ROOT)
+                        + " (URL ML)";
+                List<String> eventIndicators = new java.util.ArrayList<>();
+                if (heuristicIndicators != null) {
+                    eventIndicators.addAll(heuristicIndicators);
+                }
+                eventIndicators.add(String.format(
+                        Locale.US,
+                        "URL Logistic Regression score: %.6f",
+                        mlResult.getScore()));
+                eventIndicators.add(String.format(
+                        Locale.US,
+                        "URL model probability: %.2f%%",
+                        mlResult.getProbability() * 100.0));
+
+                latestExplanationType = "URL";
+                latestEvidence = url;
+                latestClassification = storedClassification;
+                latestIndicators = eventIndicators;
+
+                getSharedPreferences(
+                        "OnDeviceGuardSecurityEvents",
+                        MODE_PRIVATE)
+                        .edit()
+                        .putString("LATEST_URL", url)
+                        .putString("LATEST_URL_LABEL", storedClassification)
+                        .putString("LATEST_URL_INDICATORS",
+                                android.text.TextUtils.join("\n", eventIndicators))
+                        .putLong("LATEST_URL_TIMESTAMP", System.currentTimeMillis())
+                        .apply();
+
+                boolean threatDetected = mlResult.isPhishing()
+                        || heuristicResult.isSuspicious();
                 String finalOutput = output.toString();
 
                 runOnUiThread(() -> {
-
                     if (!isActivityUsable()) {
                         return;
                     }
 
                     isScanningUrl = false;
-
                     btnScanUrl.setEnabled(true);
-
                     txtUrlResult.setText(finalOutput);
+                    btnExplain.setEnabled(true);
+                    txtExplanation.setText(
+                            "URL scan result ready. Explain with AI will explain the original ML prediction and the separate heuristic indicators.");
+                    setFeedbackBackground(txtExplanation, STATUS_INFO);
                     setFeedbackBackground(
                             txtUrlResult,
-                            result.isSuspicious() ? STATUS_ERROR : STATUS_SUCCESS);
-                    if (result.isSuspicious()) {
-                        setStatus("Suspicious URL pattern detected",
-                                STATUS_ERROR, false);
+                            threatDetected ? STATUS_ERROR : STATUS_SUCCESS);
+
+                    if (threatDetected) {
+                        setStatus(
+                                "URL model or heuristic scanner raised a warning",
+                                STATUS_ERROR,
+                                false);
                     } else {
-                        setStatus("URL scan completed",
-                                STATUS_SUCCESS, false);
+                        setStatus(
+                                "URL ML and heuristic scans completed",
+                                STATUS_SUCCESS,
+                                false);
                     }
                 });
 
             } catch (Exception error) {
-
+                String message = safeMessage(error);
                 runOnUiThread(() -> {
-
                     if (!isActivityUsable()) {
                         return;
                     }
 
                     isScanningUrl = false;
-
                     btnScanUrl.setEnabled(true);
-
-                    txtUrlResult.setText(
-                            "URL scanning failed: "
-                                    + safeMessage(error));
+                    txtUrlResult.setText("URL scanning failed: " + message);
                     setFeedbackBackground(txtUrlResult, STATUS_ERROR);
                     setStatus("URL scanning failed", STATUS_ERROR, true);
                 });
+            } finally {
+                if (mlClassifier != null) {
+                    mlClassifier.close();
+                }
             }
         });
     }
@@ -772,8 +812,7 @@ public class MainActivity extends AppCompatActivity {
 
         if (isImporting
                 || isClassifying
-                || isExplaining
-                || isModelLoading) {
+                || isExplaining) {
             return;
         }
 
@@ -975,9 +1014,9 @@ public class MainActivity extends AppCompatActivity {
                                 Toast.LENGTH_SHORT
                         ).show();
 
-                        if (explainAfterImport && latestResult != null) {
+                        if (explainAfterImport && latestExplanationType != null) {
                             explainAfterImport = false;
-                            explainMessage();
+                            explainLatestSecurityEvent();
                         }
                     }
                 });
@@ -1130,6 +1169,10 @@ public class MainActivity extends AppCompatActivity {
                                 }
 
                                 latestResult = result;
+                                latestExplanationType = "SMS";
+                                latestEvidence = latestMessage;
+                                latestClassification = result.getLabel();
+                                latestIndicators = result.getIndicators();
 
                                 double score =
                                         result.getDecisionScore();
@@ -1263,18 +1306,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void explainMessage() {
+        explainLatestSecurityEvent();
+    }
 
-        if (isClassifying
-                || isExplaining
-                || isImporting) {
+    private void explainLatestSecurityEvent() {
+
+        if (isClassifying || isExplaining || isImporting) {
             return;
         }
 
-        if (latestResult == null || latestMessage == null) {
-            setStatus("Analyze an SMS before requesting an AI explanation.",
+        if (latestExplanationType == null
+                || latestEvidence == null
+                || latestClassification == null) {
+            setStatus("Run a security scan or wait for a background detection first.",
                     STATUS_WARNING, false);
-            Toast.makeText(this, "Analyze a message first.",
-                    Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1282,86 +1327,137 @@ public class MainActivity extends AppCompatActivity {
             explainAfterImport = true;
             txtExplanation.setText(
                     "Select the Llama .pte model and tokenizer.model. "
-                            + "After both files are imported, the AI explanation will start automatically.");
+                            + "After both files are imported, the explanation will start automatically.");
             setFeedbackBackground(txtExplanation, STATUS_INFO);
             startLlamaImport();
             return;
         }
 
         isExplaining = true;
-
         btnAnalyze.setEnabled(false);
         btnExplain.setEnabled(false);
-
         progressBar.setVisibility(View.VISIBLE);
 
-        txtExplanation.setText(
-                "Loading Llama and generating an on-device explanation...");
+        final String type = latestExplanationType;
+        final String evidence = latestEvidence;
+        final String classification = latestClassification;
+        final List<String> indicators = new java.util.ArrayList<>(latestIndicators);
+
+        txtExplanation.setText("AI EXPLANATION — " + type
+                + "\nLoading Llama and explaining the existing classifier result...");
         setFeedbackBackground(txtExplanation, STATUS_INFO);
         setStatus("Loading local Llama model...", STATUS_INFO, false);
 
-        final String message = latestMessage;
-        final MessageClassification result = latestResult;
+        explanationProvider.explainSecurityEvent(
+                        type,
+                        evidence,
+                        classification,
+                        indicators,
+                        new ExplanationProvider.Callback() {
 
-        explanationProvider.explain(
-                message,
-                result,
-                new ExplanationProvider.Callback() {
-
-                    @Override
-                    public void onSuccess(String explanation) {
-
-                        runOnUiThread(() -> {
-
-                            if (!isActivityUsable()) {
-                                return;
+                            @Override
+                            public void onSuccess(String explanation) {
+                                runOnUiThread(() -> {
+                                    if (!isActivityUsable()) {
+                                        return;
+                                    }
+                                    isExplaining = false;
+                                    btnAnalyze.setEnabled(
+                                            classifier != null && classifier.isModelLoaded());
+                                    btnExplain.setEnabled(true);
+                                    progressBar.setVisibility(View.GONE);
+                                    txtExplanation.setText(
+                                            "AI EXPLANATION — " + type + "\n\n" + explanation);
+                                    setFeedbackBackground(txtExplanation, STATUS_SUCCESS);
+                                    setStatus("AI explanation completed. Llama resources released.",
+                                            STATUS_SUCCESS, false);
+                                });
                             }
 
-                            isExplaining = false;
-
-                            btnAnalyze.setEnabled(true);
-                            btnExplain.setEnabled(
-                                    latestResult != null);
-
-                            progressBar.setVisibility(
-                                    View.GONE);
-
-                            txtExplanation.setText(
-                                    explanation);
-                            setFeedbackBackground(
-                                    txtExplanation, STATUS_SUCCESS);
-                            setStatus("AI explanation completed. Llama resources released.",
-                                    STATUS_SUCCESS, false);
-                        });
-                    }
-
-                    @Override
-                    public void onError(String message) {
-
-                        runOnUiThread(() -> {
-
-                            if (!isActivityUsable()) {
-                                return;
+                            @Override
+                            public void onError(String message) {
+                                runOnUiThread(() -> {
+                                    if (!isActivityUsable()) {
+                                        return;
+                                    }
+                                    isExplaining = false;
+                                    btnAnalyze.setEnabled(
+                                            classifier != null && classifier.isModelLoaded());
+                                    btnExplain.setEnabled(true);
+                                    progressBar.setVisibility(View.GONE);
+                                    txtExplanation.setText(
+                                            "AI EXPLANATION — " + type
+                                                    + "\n\nExplanation failed:\n" + message);
+                                    setFeedbackBackground(txtExplanation, STATUS_ERROR);
+                                    setStatus("AI explanation failed", STATUS_ERROR, true);
+                                });
                             }
-
-                            isExplaining = false;
-
-                            btnAnalyze.setEnabled(true);
-                            btnExplain.setEnabled(
-                                    latestResult != null);
-
-                            progressBar.setVisibility(
-                                    View.GONE);
-
-                            txtExplanation.setText(
-                                    "Explanation failed:\n"
-                                            + message);
-                            setFeedbackBackground(
-                                    txtExplanation, STATUS_ERROR);
-                            setStatus("AI explanation failed", STATUS_ERROR, true);
                         });
-                    }
-                });
+    }
+
+    private void loadLatestBackgroundSmsResult() {
+
+        android.content.SharedPreferences preferences =
+                getSharedPreferences(
+                        "OnDeviceGuardSecurityEvents",
+                        MODE_PRIVATE);
+
+        String body = preferences.getString("LATEST_SMS_BODY", null);
+        if (body == null || body.trim().isEmpty()) {
+            return;
+        }
+
+        String sender = preferences.getString("LATEST_SMS_SENDER", "Unknown");
+        String label = preferences.getString("LATEST_SMS_LABEL", "UNKNOWN");
+        float confidence = preferences.getFloat("LATEST_SMS_CONFIDENCE", 0f);
+        String indicatorText = preferences.getString("LATEST_SMS_INDICATORS", "");
+        long timestamp = preferences.getLong("LATEST_SMS_TIMESTAMP", 0L);
+        long urlTimestamp = preferences.getLong("LATEST_URL_TIMESTAMP", 0L);
+        long networkTimestamp = preferences.getLong("LATEST_NETWORK_TIMESTAMP", 0L);
+        if (urlTimestamp > timestamp || networkTimestamp > timestamp) {
+            return;
+        }
+
+        List<String> indicators = new java.util.ArrayList<>();
+        if (!indicatorText.trim().isEmpty()) {
+            indicators.addAll(java.util.Arrays.asList(indicatorText.split("\n")));
+        }
+
+        latestExplanationType = "SMS";
+        latestEvidence = body;
+        latestClassification = label;
+        latestIndicators = indicators;
+        latestMessage = body;
+        latestResult = new MessageClassification(
+                label,
+                confidence,
+                indicators);
+
+        editMessage.setText(body);
+        editMessage.setSelection(editMessage.getText().length());
+
+        String display = "BACKGROUND SMS DETECTION\n\n"
+                + "Sender: " + sender + "\n"
+                + "Result: " + label.toUpperCase(Locale.ROOT) + "\n"
+                + "Confidence: " + String.format(Locale.US, "%.1f%%", confidence * 100f)
+                + "\nReceived: "
+                + (timestamp > 0
+                ? android.text.format.DateFormat.format("dd MMM yyyy, hh:mm a", timestamp)
+                : "Unknown")
+                + "\n\nMessage:\n" + body
+                + "\n\nIndicators:\n"
+                + (indicatorText.isEmpty() ? "No indicators supplied." : indicatorText);
+
+        txtDetectionResult.setText(display);
+        setFeedbackBackground(
+                txtDetectionResult,
+                "SCAM".equalsIgnoreCase(label)
+                        || "SUSPICIOUS".equalsIgnoreCase(label)
+                        || "PHISHING".equalsIgnoreCase(label)
+                        ? STATUS_ERROR : STATUS_SUCCESS);
+        btnExplain.setEnabled(true);
+        txtExplanation.setText("Background SMS result is ready. Select Explain with AI.");
+        setFeedbackBackground(txtExplanation, STATUS_INFO);
     }
 
     private boolean areLlamaFilesReady() {
@@ -1499,6 +1595,70 @@ public class MainActivity extends AppCompatActivity {
         if (resourceMonitor != null) {
             resourceMonitor.start();
         }
+        loadLatestBackgroundSmsResult();
+        loadLatestUrlResult();
+        loadLatestNetworkResult();
+    }
+
+    private void loadLatestUrlResult() {
+        android.content.SharedPreferences preferences =
+                getSharedPreferences("OnDeviceGuardSecurityEvents", MODE_PRIVATE);
+        String url = preferences.getString("LATEST_URL", null);
+        long urlTime = preferences.getLong("LATEST_URL_TIMESTAMP", 0L);
+        long smsTime = preferences.getLong("LATEST_SMS_TIMESTAMP", 0L);
+        long networkTime = preferences.getLong("LATEST_NETWORK_TIMESTAMP", 0L);
+        if (url == null || urlTime < smsTime || urlTime < networkTime) {
+            return;
+        }
+        latestExplanationType = "URL";
+        latestEvidence = url;
+        latestClassification = preferences.getString(
+                "LATEST_URL_LABEL", "HEURISTIC RESULT");
+        String indicatorsText = preferences.getString(
+                "LATEST_URL_INDICATORS", "");
+        latestIndicators = indicatorsText.trim().isEmpty()
+                ? java.util.Collections.emptyList()
+                : java.util.Arrays.asList(indicatorsText.split("\n"));
+        txtUrlResult.setText(
+                "URL: " + url + "\nResult: " + latestClassification
+                        + "\n\nIndicators:\n"
+                        + (indicatorsText.isEmpty()
+                        ? "No heuristic indicators." : indicatorsText)
+                        + "\n\nHeuristic-only scan. URL ML model was not included.");
+        btnExplain.setEnabled(true);
+        txtExplanation.setText("Latest URL event ready. Select Explain with AI.");
+        setFeedbackBackground(txtExplanation, STATUS_INFO);
+    }
+
+    private void loadLatestNetworkResult() {
+        android.content.SharedPreferences preferences =
+                getSharedPreferences("OnDeviceGuardSecurityEvents", MODE_PRIVATE);
+        String domain = preferences.getString("LATEST_NETWORK_DOMAIN", null);
+        if (domain == null || domain.trim().isEmpty()) {
+            return;
+        }
+        String label = preferences.getString("LATEST_NETWORK_LABEL", "OBSERVED");
+        String indicatorsText = preferences.getString("LATEST_NETWORK_INDICATORS", "");
+        long networkTime = preferences.getLong("LATEST_NETWORK_TIMESTAMP", 0L);
+        long smsTime = preferences.getLong("LATEST_SMS_TIMESTAMP", 0L);
+        long urlTime = preferences.getLong("LATEST_URL_TIMESTAMP", 0L);
+        if (networkTime < smsTime || networkTime < urlTime) {
+            return;
+        }
+        latestExplanationType = "NETWORK";
+        latestEvidence = domain;
+        latestClassification = label;
+        latestIndicators = indicatorsText.trim().isEmpty()
+                ? java.util.Collections.singletonList(
+                        "Domain observed by DNS monitoring; no 20-feature flow prediction was run.")
+                : java.util.Arrays.asList(indicatorsText.split("\n"));
+        txtNetworkStatus.setText(
+                "Latest DNS event: " + domain + "\n" + label
+                        + "\nAI flow prediction: not run");
+        setFeedbackBackground(txtNetworkStatus, STATUS_WARNING);
+        btnExplain.setEnabled(true);
+        txtExplanation.setText("Network event ready. Select Explain with AI.");
+        setFeedbackBackground(txtExplanation, STATUS_INFO);
     }
 
     @Override

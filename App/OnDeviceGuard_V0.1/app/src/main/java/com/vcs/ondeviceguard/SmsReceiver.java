@@ -153,10 +153,16 @@ public class SmsReceiver extends BroadcastReceiver {
                                             }
                                         }
 
+                                        saveLatestSmsResult(
+                                                appContext,
+                                                smsText,
+                                                finalSender,
+                                                result,
+                                                urlDetails.toString());
+
                                         if (result.isSuspicious()
                                                 || suspiciousUrl) {
-
-                                            showThreatNotification(
+                                            createSmsNotification(
                                                     appContext,
                                                     finalSender,
                                                     result,
@@ -275,7 +281,47 @@ public class SmsReceiver extends BroadcastReceiver {
         }
     }
 
-    private static void showThreatNotification(
+    private static void saveLatestSmsResult(
+            Context context,
+            String body,
+            String sender,
+            MessageClassification result,
+            String urlDetails) {
+
+        StringBuilder indicators = new StringBuilder();
+
+        if (result.getIndicators() != null) {
+            for (String indicator : result.getIndicators()) {
+                if (indicator != null && !indicator.trim().isEmpty()) {
+                    if (indicators.length() > 0) {
+                        indicators.append("\n");
+                    }
+                    indicators.append(indicator.trim());
+                }
+            }
+        }
+
+        if (urlDetails != null && !urlDetails.trim().isEmpty()) {
+            if (indicators.length() > 0) {
+                indicators.append("\n");
+            }
+            indicators.append(urlDetails.trim());
+        }
+
+        context.getSharedPreferences(
+                        "OnDeviceGuardSecurityEvents",
+                        Context.MODE_PRIVATE)
+                .edit()
+                .putString("LATEST_SMS_BODY", body)
+                .putString("LATEST_SMS_SENDER", sender)
+                .putString("LATEST_SMS_LABEL", result.getLabel())
+                .putFloat("LATEST_SMS_CONFIDENCE", result.getConfidence())
+                .putString("LATEST_SMS_INDICATORS", indicators.toString())
+                .putLong("LATEST_SMS_TIMESTAMP", System.currentTimeMillis())
+                .apply();
+    }
+
+    private static void createSmsNotification(
             Context context,
             String sender,
             MessageClassification result,

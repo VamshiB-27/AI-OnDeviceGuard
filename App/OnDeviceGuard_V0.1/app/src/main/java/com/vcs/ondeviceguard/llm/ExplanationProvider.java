@@ -15,4 +15,15 @@ public interface ExplanationProvider {
             String originalMessage,
             MessageClassification classification,
             Callback callback);
+
+    default void explainSecurityEvent(
+            String type,
+            String evidence,
+            String classification,
+            java.util.List<String> indicators,
+            Callback callback) {
+        if (callback != null) {
+            callback.onError("Generic security-event explanations are not supported by this provider.");
+        }
+    }
 }

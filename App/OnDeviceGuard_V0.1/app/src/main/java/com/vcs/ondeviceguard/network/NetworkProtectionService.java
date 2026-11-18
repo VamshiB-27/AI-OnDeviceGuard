@@ -9,17 +9,22 @@ import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 
-import com.vcs.ondeviceguard.R;
 import com.vcs.ondeviceguard.security.UrlScanResult;
 import com.vcs.ondeviceguard.security.UrlThreatScanner;
 
+import java.io.BufferedReader;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NetworkProtectionService extends VpnService {
@@ -33,15 +38,28 @@ public final class NetworkProtectionService extends VpnService {
     public static final String EXTRA_STATUS = "status";
     public static final String EXTRA_DOMAIN = "domain";
     public static final String EXTRA_BLOCKED = "blocked";
+    public static final String EXTRA_DETAIL = "detail";
 
     private static final String CHANNEL_ID = "network_protection";
-    private static final int NOTIFICATION_ID = 4102;
+    private static final String THREAT_CHANNEL_ID = "network_threats";
+    private static final int FOREGROUND_NOTIFICATION_ID = 4102;
+    private static final int THREAT_NOTIFICATION_ID = 4104;
+
+    private static final long ALERT_COOLDOWN_MS =
+            30L * 60L * 1000L;
+
     private static final String VPN_ADDRESS = "10.77.0.1";
     private static final String DNS_ADDRESS = "10.77.0.2";
     private static final String UPSTREAM_DNS = "1.1.1.1";
+    private static final String BLOCKLIST_ASSET = "network_blocklist.txt";
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final UrlThreatScanner scanner = new UrlThreatScanner();
+    private final ConcurrentHashMap<String, Long> lastAlertTimes =
+            new ConcurrentHashMap<>();
+
+    private volatile Set<String> blockedDomains =
+            Collections.emptySet();
 
     private ParcelFileDescriptor vpnInterface;
     private Thread workerThread;
@@ -54,18 +72,22 @@ public final class NetworkProtectionService extends VpnService {
         }
 
         if (running.get()) {
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
-        createNotificationChannel();
-        startForeground(NOTIFICATION_ID, buildNotification(
-                "DNS protection is active"));
+        createNotificationChannels();
+        startForeground(
+                FOREGROUND_NOTIFICATION_ID,
+                buildForegroundNotification("DNS monitoring is active"));
 
         try {
+            blockedDomains = loadBlocklist();
             establishVpn();
             running.set(true);
-            sendStatus("DNS threat protection is active");
-            workerThread = new Thread(this::readDnsPackets,
+            sendStatus("DNS monitoring is active. Local blocklist and URL heuristics are enabled; AI flow classification is not active because the 20 CICIDS2017 flow features are not collected.");
+
+            workerThread = new Thread(
+                    this::readDnsPackets,
                     "OnDeviceGuard-DNS");
             workerThread.start();
         } catch (Exception error) {
@@ -74,6 +96,63 @@ public final class NetworkProtectionService extends VpnService {
         }
 
         return START_NOT_STICKY;
+    }
+
+    private Set<String> loadBlocklist() throws Exception {
+        Set<String> result = new HashSet<>();
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(
+                        getAssets().open(BLOCKLIST_ASSET),
+                        StandardCharsets.UTF_8))) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String domain = line.trim().toLowerCase(Locale.ROOT);
+
+                if (domain.isEmpty() || domain.startsWith("#")) {
+                    continue;
+                }
+
+                if (isValidDomain(domain)) {
+                    result.add(domain);
+                }
+            }
+        }
+
+        return Collections.unmodifiableSet(result);
+    }
+
+    private boolean isValidDomain(String domain) {
+        if (domain == null || domain.length() > 253
+                || domain.isEmpty() || domain.startsWith(".")
+                || domain.endsWith(".")) {
+            return false;
+        }
+
+        String[] labels = domain.split("\\.");
+        if (labels.length < 2) {
+            return false;
+        }
+
+        for (String label : labels) {
+            if (label.isEmpty() || label.length() > 63
+                    || !label.matches("[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private boolean matchesBlocklist(String domain) {
+        for (String blocked : blockedDomains) {
+            if (domain.equals(blocked)
+                    || domain.endsWith("." + blocked)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void establishVpn() throws Exception {
@@ -140,10 +219,7 @@ public final class NetworkProtectionService extends VpnService {
             return false;
         }
 
-        int destinationPort = unsignedShort(packet,
-                headerLength + 2);
-
-        return destinationPort == 53;
+        return unsignedShort(packet, headerLength + 2) == 53;
     }
 
     private void processDnsPacket(
@@ -156,53 +232,75 @@ public final class NetworkProtectionService extends VpnService {
             int dnsOffset = udpOffset + 8;
             int dnsLength = packet.length - dnsOffset;
 
-            if (dnsLength < 17) {
+            if (dnsLength < 12) {
                 return;
             }
 
             int sourcePort = unsignedShort(packet, udpOffset);
             byte[] dnsQuery = new byte[dnsLength];
-            System.arraycopy(packet, dnsOffset,
-                    dnsQuery, 0, dnsLength);
+            System.arraycopy(packet, dnsOffset, dnsQuery, 0, dnsLength);
 
-            String domain = extractDomain(dnsQuery);
-
-            if (domain == null || domain.isEmpty()) {
+            int flags = unsignedShort(dnsQuery, 2);
+            if ((flags & 0x8000) != 0) {
                 return;
             }
 
-            UrlScanResult scan = scanner.scanUrl("https://" + domain);
+            String domain = extractDomain(dnsQuery);
 
-            if (scan.isSuspicious()) {
+            if (domain == null || !isValidDomain(domain)) {
+                forwardAndReply(packet, dnsQuery, sourcePort, output);
+                return;
+            }
+
+            if (matchesBlocklist(domain)) {
                 byte[] blockedResponse = makeNxDomain(dnsQuery);
                 byte[] responsePacket = buildIpv4UdpResponse(
                         packet, sourcePort, blockedResponse);
                 output.write(responsePacket);
                 output.flush();
 
-                sendDomainAlert(domain, true, scan.getIndicators());
+                sendThreatAlert(
+                        domain,
+                        true,
+                        "Matched an exact domain or subdomain in the local blocklist.");
                 return;
             }
 
-            byte[] dnsResponse = forwardDns(dnsQuery);
+            forwardAndReply(packet, dnsQuery, sourcePort, output);
 
-            if (dnsResponse != null) {
-                byte[] responsePacket = buildIpv4UdpResponse(
-                        packet, sourcePort, dnsResponse);
-                output.write(responsePacket);
-                output.flush();
+            UrlScanResult heuristic =
+                    scanner.scanUrl("https://" + domain);
+
+            if (heuristic.isSuspicious()) {
+                sendThreatAlert(
+                        domain,
+                        false,
+                        String.join(" ", heuristic.getIndicators()));
             }
-
-            sendDomainAlert(domain, false, null);
 
         } catch (Exception error) {
             sendStatus("DNS request processing error: " + safeMessage(error));
         }
     }
 
+    private void forwardAndReply(
+            byte[] packet,
+            byte[] dnsQuery,
+            int sourcePort,
+            FileOutputStream output) throws Exception {
+
+        byte[] dnsResponse = forwardDns(dnsQuery);
+
+        if (dnsResponse != null) {
+            byte[] responsePacket = buildIpv4UdpResponse(
+                    packet, sourcePort, dnsResponse);
+            output.write(responsePacket);
+            output.flush();
+        }
+    }
+
     private byte[] forwardDns(byte[] query) throws Exception {
-        DatagramSocket socket = new DatagramSocket();
-        try {
+        try (DatagramSocket socket = new DatagramSocket()) {
             if (!protect(socket)) {
                 throw new IllegalStateException(
                         "Unable to protect upstream DNS socket.");
@@ -219,15 +317,21 @@ public final class NetworkProtectionService extends VpnService {
             socket.receive(received);
 
             byte[] exact = new byte[received.getLength()];
-            System.arraycopy(received.getData(),
-                    received.getOffset(), exact, 0, exact.length);
+            System.arraycopy(
+                    received.getData(),
+                    received.getOffset(),
+                    exact,
+                    0,
+                    exact.length);
             return exact;
-        } finally {
-            socket.close();
         }
     }
 
     private String extractDomain(byte[] dns) {
+        if (dns.length < 17 || unsignedShort(dns, 4) < 1) {
+            return null;
+        }
+
         int cursor = 12;
         StringBuilder domain = new StringBuilder();
 
@@ -249,7 +353,9 @@ public final class NetworkProtectionService extends VpnService {
             }
 
             domain.append(new String(
-                    dns, cursor, labelLength,
+                    dns,
+                    cursor,
+                    labelLength,
                     StandardCharsets.US_ASCII));
             cursor += labelLength;
         }
@@ -258,21 +364,25 @@ public final class NetworkProtectionService extends VpnService {
             return null;
         }
 
-        return domain.toString().toLowerCase(java.util.Locale.ROOT);
+        return domain.toString().toLowerCase(Locale.ROOT);
     }
 
     private byte[] makeNxDomain(byte[] query) {
         int questionEnd = 12;
+
         while (questionEnd < query.length) {
             int labelLength = query[questionEnd++] & 0xFF;
+
             if (labelLength == 0) {
                 break;
             }
+
             if ((labelLength & 0xC0) != 0
                     || labelLength > 63
                     || questionEnd + labelLength > query.length) {
                 return query;
             }
+
             questionEnd += labelLength;
         }
 
@@ -281,8 +391,10 @@ public final class NetworkProtectionService extends VpnService {
         System.arraycopy(query, 0, response, 0, questionEnd);
 
         int originalFlags = unsignedShort(response, 2);
-        int flags = 0x8000 | 0x0080 | (originalFlags & 0x0100) | 0x0003;
-        putShort(response, 2, flags);
+        int responseFlags = 0x8000 | 0x0080
+                | (originalFlags & 0x0100) | 0x0003;
+
+        putShort(response, 2, responseFlags);
         putShort(response, 4, 1);
         putShort(response, 6, 0);
         putShort(response, 8, 0);
@@ -321,23 +433,24 @@ public final class NetworkProtectionService extends VpnService {
         putShort(response, 24, udpLength);
         putShort(response, 26, 0);
 
-        System.arraycopy(dnsResponse, 0,
-                response, 28, dnsResponse.length);
-
+        System.arraycopy(dnsResponse, 0, response, 28, dnsResponse.length);
         return response;
     }
 
     private int checksum(byte[] data, int offset, int length) {
         long sum = 0;
+
         for (int i = offset; i < offset + length; i += 2) {
             int high = data[i] & 0xFF;
             int low = i + 1 < offset + length
                     ? data[i + 1] & 0xFF : 0;
             sum += (high << 8) | low;
         }
+
         while ((sum >> 16) != 0) {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
+
         return (int) (~sum) & 0xFFFF;
     }
 
@@ -351,28 +464,53 @@ public final class NetworkProtectionService extends VpnService {
         data[offset + 1] = (byte) (value & 0xFF);
     }
 
-    private void sendDomainAlert(
+    private void sendThreatAlert(
             String domain,
             boolean blocked,
-            List<String> indicators) {
+            String detail) {
+
+        long now = System.currentTimeMillis();
+        Long previous = lastAlertTimes.put(domain, now);
+
+        if (previous != null && now - previous < ALERT_COOLDOWN_MS) {
+            return;
+        }
+
+        String classification = blocked
+                ? "BLOCKED — LOCAL DNS BLOCKLIST"
+                : "SUSPICIOUS PATTERN — HEURISTIC ONLY";
+
+        getSharedPreferences(
+                        "OnDeviceGuardSecurityEvents",
+                        MODE_PRIVATE)
+                .edit()
+                .putString("LATEST_NETWORK_DOMAIN", domain)
+                .putString("LATEST_NETWORK_LABEL", classification)
+                .putString("LATEST_NETWORK_INDICATORS",
+                        detail == null ? "" : detail)
+                .putLong("LATEST_NETWORK_TIMESTAMP", now)
+                .apply();
 
         Intent event = new Intent(ACTION_STATUS);
         event.setPackage(getPackageName());
         event.putExtra(EXTRA_STATUS,
                 blocked
-                        ? "Blocked suspicious DNS domain: " + domain
-                        : "DNS request checked: " + domain);
+                        ? "Blocked listed threat domain: " + domain
+                        : "Potentially risky domain observed (not blocked): " + domain);
         event.putExtra(EXTRA_DOMAIN, domain);
         event.putExtra(EXTRA_BLOCKED, blocked);
+        event.putExtra(EXTRA_DETAIL, detail == null ? "" : detail);
         sendBroadcast(event);
 
-        if (blocked) {
-            NotificationManager manager =
-                    getSystemService(NotificationManager.class);
-            if (manager != null) {
+        NotificationManager manager =
+                getSystemService(NotificationManager.class);
+
+        if (manager != null) {
+            try {
                 manager.notify(
-                        (int) (System.currentTimeMillis() & 0x7fffffff),
-                        buildThreatNotification(domain, indicators));
+                        THREAT_NOTIFICATION_ID,
+                        buildThreatNotification(domain, blocked, detail));
+            } catch (SecurityException ignored) {
             }
         }
     }
@@ -384,72 +522,80 @@ public final class NetworkProtectionService extends VpnService {
         sendBroadcast(event);
     }
 
-    private void createNotificationChannel() {
+    private void createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "Network threat protection",
-                    NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription(
-                    "Shows when OnDeviceGuard DNS protection is active.");
-
             NotificationManager manager =
                     getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
+
+            if (manager == null) {
+                return;
             }
 
+            NotificationChannel protection = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Network protection",
+                    NotificationManager.IMPORTANCE_LOW);
+            protection.setDescription(
+                    "Shows whether DNS monitoring is active.");
+            manager.createNotificationChannel(protection);
+
             NotificationChannel threats = new NotificationChannel(
-                    "network_threats",
+                    THREAT_CHANNEL_ID,
                     "Network threat alerts",
-                    NotificationManager.IMPORTANCE_HIGH);
-            manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(threats);
-            }
+                    NotificationManager.IMPORTANCE_DEFAULT);
+            threats.setDescription(
+                    "Alerts for domains on the local blocklist or high-risk domain patterns.");
+            manager.createNotificationChannel(threats);
         }
     }
 
-    private Notification buildNotification(String text) {
+    private Notification buildForegroundNotification(String text) {
         Intent stop = new Intent(this, NetworkProtectionService.class);
         stop.setAction(ACTION_STOP);
+
         PendingIntent pendingStop = PendingIntent.getService(
-                this, 4103, stop,
+                this,
+                4103,
+                stop,
                 PendingIntent.FLAG_UPDATE_CURRENT
                         | PendingIntent.FLAG_IMMUTABLE);
 
-        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID);
 
         return builder
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
                 .setContentTitle("OnDeviceGuard network protection")
                 .setContentText(text)
                 .setOngoing(true)
-                .addAction(android.R.drawable.ic_media_pause,
-                        "Stop", pendingStop)
+                .addAction(
+                        android.R.drawable.ic_media_pause,
+                        "Stop",
+                        pendingStop)
                 .build();
     }
 
     private Notification buildThreatNotification(
             String domain,
-            List<String> indicators) {
+            boolean blocked,
+            String detail) {
 
-        String detail = "Suspicious domain blocked: " + domain;
-        if (indicators != null && !indicators.isEmpty()) {
-            detail += ". " + indicators.get(0);
+        String title = blocked
+                ? "OnDeviceGuard blocked a listed domain"
+                : "OnDeviceGuard: review this domain";
+
+        String message = blocked
+                ? domain + " matched your local blocklist."
+                : domain + " has a high-risk pattern. It was not blocked.";
+
+        if (detail != null && !detail.trim().isEmpty()) {
+            message += " " + detail;
         }
 
-        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, "network_threats")
-                : new Notification.Builder(this);
-
-        return builder
+        return new Notification.Builder(this, THREAT_CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("OnDeviceGuard blocked a domain")
-                .setContentText(detail)
-                .setStyle(new Notification.BigTextStyle().bigText(detail))
+                .setContentTitle(title)
+                .setContentText(message)
+                .setStyle(new Notification.BigTextStyle().bigText(message))
                 .setAutoCancel(true)
                 .build();
     }
@@ -478,7 +624,7 @@ public final class NetworkProtectionService extends VpnService {
             workerThread = null;
         }
 
-        sendStatus("DNS threat protection is stopped");
+        sendStatus("DNS threat monitoring is stopped.");
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -492,6 +638,7 @@ public final class NetworkProtectionService extends VpnService {
     @Override
     public void onDestroy() {
         running.set(false);
+
         if (vpnInterface != null) {
             try {
                 vpnInterface.close();
@@ -499,6 +646,7 @@ public final class NetworkProtectionService extends VpnService {
             }
             vpnInterface = null;
         }
+
         super.onDestroy();
     }
 }
