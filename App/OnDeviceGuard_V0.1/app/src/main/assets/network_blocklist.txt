@@ -1,3 +1,0 @@
-# One verified domain per line.
-# A listed domain and its subdomains will be blocked.
-# Do not add legitimate domains or unverified examples.
