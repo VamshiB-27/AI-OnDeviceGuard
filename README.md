@@ -11,8 +11,9 @@ Download the required files from the Releases section:
 | File | Description |
 |---|---|
 | `app-debug.apk` | Android application installer |
-| `OnDeviceGuard_V0.1.zip` | Android Studio project source code |
-| `llama model.zip` | Llama AI model and tokenizer files |
+| `llama.model.zip` | Llama AI model and tokenizer |
+| `OnDeviceGuard_V0.1.zip` | Complete Android Studio project source code |
+| `Working_video.zip` | Project working demonstration video |
 
 [Download all release assets](https://github.com/VamshiB-27/AI-OnDeviceGuard/releases/tag/v0.1.0)
 
